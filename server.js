@@ -17,7 +17,7 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
 const STATE_FILE = process.env.MATH_CLASH_STATE_FILE || path.join(DATA_DIR, "state.json");
 
-const APP_NAME = process.env.APP_NAME || "Math Clash";
+const APP_NAME = process.env.APP_NAME || "Brain Clash";
 const APP_URL = normalizeAppUrl(process.env.APP_URL || "https://your-domain.example");
 const DEV_MODE = process.env.DEV_MODE === "true" || process.env.NODE_ENV !== "production";
 const FARCASTER_HOSTED_MANIFEST_ID = process.env.FARCASTER_HOSTED_MANIFEST_ID || "";
@@ -94,6 +94,52 @@ const DIFFICULTIES = {
   }
 };
 
+const GAME_MODES = {
+  math: {
+    label: "Math Clash",
+    questionType: "math"
+  },
+  quiz: {
+    label: "Quiz Clash",
+    questionType: "quiz"
+  }
+};
+
+const QUIZ_CATEGORIES = {
+  crypto: {
+    label: "Crypto",
+    questions: [
+      { expression: "What network is this test app using right now?", answer: "Base Sepolia" },
+      { expression: "What token is used for native gas on Base?", answer: "ETH" },
+      { expression: "What does an escrow contract hold?", answer: "funds" }
+    ]
+  },
+  gaming: {
+    label: "Gaming",
+    questions: [
+      { expression: "In games, what does PvP mean?", answer: "player versus player" },
+      { expression: "What do you call a ranked player list?", answer: "leaderboard" },
+      { expression: "What word means a tied result?", answer: "draw" }
+    ]
+  },
+  logic: {
+    label: "Logic",
+    questions: [
+      { expression: "What comes next: 2, 4, 8, 16?", answer: "32" },
+      { expression: "If all Bloops are Razzies and all Razzies are Lazzies, are Bloops Lazzies?", answer: "yes" },
+      { expression: "Which is larger: 0.9 or 0.11?", answer: "0.9" }
+    ]
+  },
+  culture: {
+    label: "Culture",
+    questions: [
+      { expression: "What color do you get by mixing red and blue?", answer: "purple" },
+      { expression: "How many days are in a leap year?", answer: "366" },
+      { expression: "What planet is known as the Red Planet?", answer: "mars" }
+    ]
+  }
+};
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -133,7 +179,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const displayHost = HOST === "0.0.0.0" ? "localhost" : HOST;
-  console.log(`Math Clash running at http://${displayHost}:${PORT}`);
+  console.log(`${APP_NAME} running at http://${displayHost}:${PORT}`);
 });
 
 async function routeApi(req, res, url) {
@@ -142,6 +188,8 @@ async function routeApi(req, res, url) {
       ok: true,
       baseChainId: BASE_CHAIN_ID,
       entryFee: ENTRY_FEE,
+      modes: GAME_MODES,
+      quizCategories: publicQuizCategories(),
       devMode: DEV_MODE,
       storage: storage.info(),
       difficulties: Object.fromEntries(
@@ -271,11 +319,26 @@ async function routeApi(req, res, url) {
       sendJson(res, 404, { error: "Player not found" });
       return;
     }
+    const identity = resolveIdentity(body);
+    if (!identity || !playerMatchesIdentity(player, identity)) {
+      sendJson(res, 403, { error: "Player identity does not match this match seat" });
+      return;
+    }
 
     player.finishedAt = Date.now();
     tickMatch(match);
     saveState();
     sendJson(res, 200, viewMatch(match, body.playerId));
+    return;
+  }
+
+  const matchReady = url.pathname.match(/^\/api\/matches\/([^/]+)\/ready$/);
+  if (req.method === "POST" && matchReady) {
+    const match = getMatchOrThrow(matchReady[1]);
+    const body = await readJson(req);
+    const response = markPlayerReady(match, body);
+    saveState();
+    sendJson(res, 200, response);
     return;
   }
 
@@ -441,13 +504,13 @@ function buildMiniAppManifest(req) {
     splashImageUrl: `${appUrl}/assets/splash.png`,
     splashBackgroundColor: "#111318",
     heroImageUrl: `${appUrl}/assets/og.png`,
-    subtitle: "1v1 math battles",
-    description: "Solve faster than your rival and settle escrow payouts on Base.",
-    tagline: "Solve fast. Win escrow.",
+    subtitle: "1v1 brain battles",
+    description: "Solve math or quiz rounds faster than your rival and settle escrow payouts on Base.",
+    tagline: "Think fast. Win escrow.",
     primaryCategory: "games",
-    tags: ["math", "game", "base", "pvp"],
+    tags: ["quiz", "math", "base", "pvp"],
     ogTitle: APP_NAME,
-    ogDescription: "Fast 1v1 math battles with Base escrow payouts.",
+    ogDescription: "Fast 1v1 brain battles with Base escrow payouts.",
     ogImageUrl: `${appUrl}/assets/og.png`,
     requiredChains: [`eip155:${BASE_CHAIN_ID}`],
     requiredCapabilities: [
@@ -680,6 +743,7 @@ function getPersistentMatchStatus(match) {
     return match.payment?.settlement?.txHash ? "settled" : "finished";
   }
   if (match.status === "active") return "playing";
+  if (match.status === "matched") return "matched";
   if (match.status === "funding") return "matched";
   if (match.status === "waiting") return "searching";
   return match.status || "none";
@@ -893,8 +957,30 @@ function markMatchRefunded(match, body) {
   return viewMatch(match, playerId);
 }
 
+function markPlayerReady(match, body) {
+  if (!["matched", "active"].includes(match.status)) {
+    throwHttp(400, "Match is not ready for player start");
+  }
+
+  const identity = resolveIdentity(body);
+  const playerId = String(body.playerId || "");
+  const player = match.players[playerId];
+  if (!player) {
+    throwHttp(404, "Player not found");
+  }
+  if (!identity || !playerMatchesIdentity(player, identity)) {
+    throwHttp(403, "Player identity does not match this match seat");
+  }
+
+  startPlayerRun(match, player);
+  match.updatedAt = Date.now();
+  return viewMatch(match, playerId);
+}
+
 function joinMatch(body) {
   const difficulty = DIFFICULTIES[body.difficulty] ? body.difficulty : "medium";
+  const mode = normalizeMode(body.mode);
+  const quizCategories = normalizeQuizCategories(body.quizCategories, mode);
   const token = normalizeToken(body.token);
   const wallet = sanitizeWallet(body.wallet);
   const txHash = sanitizeTxHash(body.txHash);
@@ -923,12 +1009,25 @@ function joinMatch(body) {
     (match) =>
       match.status === "waiting" &&
       match.difficulty === difficulty &&
+      (match.mode || "math") === mode &&
       match.payment?.mode === "demo" &&
+      (mode !== "quiz" || quizCategoryIntersection(match.quizCategories, quizCategories).length > 0) &&
       !match.players[player.id] &&
       !Object.values(match.players).some((existing) => existing.walletKey === player.walletKey)
   );
 
   if (waiting) {
+    if (mode === "quiz") {
+      const intersection = quizCategoryIntersection(waiting.quizCategories, quizCategories);
+      waiting.quizCategories = intersection;
+      waiting.quizCategory = pickQuizCategory(intersection);
+      waiting.questions = createQuestions({
+        mode,
+        difficulty,
+        quizCategories: intersection,
+        quizCategory: waiting.quizCategory
+      });
+    }
     waiting.players[player.id] = player;
     waiting.order.push(player.id);
     startMatch(waiting);
@@ -937,13 +1036,16 @@ function joinMatch(body) {
 
   const match = {
     id: createId("match"),
+    mode,
     difficulty,
+    quizCategories,
+    quizCategory: mode === "quiz" ? pickQuizCategory(quizCategories) : null,
     status: "waiting",
     createdAt: Date.now(),
     startedAt: null,
     finishedAt: null,
     durationSec: DIFFICULTIES[difficulty].durationSec,
-    questions: createQuestions(difficulty),
+    questions: createQuestions({ mode, difficulty, quizCategories }),
     order: [player.id],
     players: {
       [player.id]: player
@@ -963,6 +1065,8 @@ function joinMatch(body) {
 
 function reservePaidMatch(body) {
   const difficulty = DIFFICULTIES[body.difficulty] ? body.difficulty : "medium";
+  const mode = normalizeMode(body.mode);
+  const quizCategories = normalizeQuizCategories(body.quizCategories, mode);
   const token = normalizeToken(body.token);
   const wallet = sanitizeWallet(body.wallet);
   const identity = resolveIdentity({ ...body, wallet });
@@ -979,7 +1083,9 @@ function reservePaidMatch(body) {
       match.status === "waiting" &&
       match.payment?.mode === "escrow" &&
       match.difficulty === difficulty &&
+      (match.mode || "math") === mode &&
       match.payment.token === token &&
+      (mode !== "quiz" || quizCategoryIntersection(match.quizCategories, quizCategories).length > 0) &&
       paidHumanPlayers(match).length === 1 &&
       match.order.length === 1 &&
       !Object.values(match.players).some(
@@ -998,6 +1104,17 @@ function reservePaidMatch(body) {
   });
 
   if (waiting) {
+    if (mode === "quiz") {
+      const intersection = quizCategoryIntersection(waiting.quizCategories, quizCategories);
+      waiting.quizCategories = intersection;
+      waiting.quizCategory = pickQuizCategory(intersection);
+      waiting.questions = createQuestions({
+        mode,
+        difficulty,
+        quizCategories: intersection,
+        quizCategory: waiting.quizCategory
+      });
+    }
     waiting.players[player.id] = player;
     waiting.order.push(player.id);
     waiting.status = "funding";
@@ -1007,14 +1124,17 @@ function reservePaidMatch(body) {
 
   const match = {
     id: createId("match"),
+    mode,
     difficulty,
+    quizCategories,
+    quizCategory: mode === "quiz" ? pickQuizCategory(quizCategories) : null,
     status: "funding",
     createdAt: Date.now(),
     updatedAt: Date.now(),
     startedAt: null,
     finishedAt: null,
     durationSec: DIFFICULTIES[difficulty].durationSec,
-    questions: createQuestions(difficulty),
+    questions: createQuestions({ mode, difficulty, quizCategories }),
     order: [player.id],
     players: {
       [player.id]: player
@@ -1068,7 +1188,7 @@ function confirmPaidMatch(body) {
   awardMatchEntryXp(player);
 
   if (paidHumanPlayers(match).length >= 2) {
-    startMatch(match);
+    markMatched(match);
   } else {
     match.status = "waiting";
   }
@@ -1124,13 +1244,38 @@ function tickMatch(match, forceFinish = false) {
     }
   }
 
+  if (match.status === "matched") {
+    const deadlineExpired = Date.now() >= Number(match.deadlineAt || match.matchedAt + MATCHMAKING_TIMEOUT_MS);
+    if (deadlineExpired || forceFinish) {
+      finishMatch(match, "deadline");
+      changed = true;
+    }
+  }
+
   return changed;
+}
+
+function markMatched(match) {
+  if (!match.matchedAt) {
+    match.matchedAt = Date.now();
+  }
+  match.status = "matched";
+  match.deadlineAt = match.matchedAt + MATCHMAKING_TIMEOUT_MS;
+  match.updatedAt = Date.now();
+  syncMatchRecord(match);
 }
 
 function startMatch(match) {
   match.status = "active";
   match.startedAt = Date.now();
   match.deadlineAt = match.startedAt + MATCHMAKING_TIMEOUT_MS;
+  Object.values(match.players).forEach((player) => {
+    if (!player.finishedAt) {
+      player.ready = true;
+      player.runStartedAt = player.runStartedAt || match.startedAt;
+      player.currentQuestionStartedAt = player.currentQuestionStartedAt || player.runStartedAt;
+    }
+  });
   match.updatedAt = Date.now();
   syncMatchRecord(match);
 }
@@ -1165,8 +1310,11 @@ function submitAnswer(match, body) {
   if (!player) {
     throwHttp(404, "Player not found");
   }
+  const identity = resolveIdentity(body);
+  if (!identity || !playerMatchesIdentity(player, identity)) {
+    throwHttp(403, "Player identity does not match this match seat");
+  }
 
-  startPlayerRun(match, player);
   const accepted = applyAnswer(match, player, body.answer);
   tickMatch(match);
 
@@ -1177,7 +1325,17 @@ function submitAnswer(match, body) {
 }
 
 function startPlayerRun(match, player) {
-  if (match.status !== "active" || player.finishedAt) return;
+  if (!["matched", "active"].includes(match.status) || player.finishedAt) return;
+  if (match.status === "matched") {
+    match.status = "active";
+  }
+  if (!match.startedAt) {
+    match.startedAt = Date.now();
+  }
+  if (!match.deadlineAt) {
+    match.deadlineAt = match.startedAt + MATCHMAKING_TIMEOUT_MS;
+  }
+  player.ready = true;
   if (!player.runStartedAt) {
     player.runStartedAt = Date.now();
   }
@@ -1187,7 +1345,7 @@ function startPlayerRun(match, player) {
 }
 
 function applyAnswer(match, player, rawAnswer, botMs = null) {
-  if (match.status !== "active" || player.finishedAt) {
+  if (match.status !== "active" || player.finishedAt || !player.ready || !player.runStartedAt) {
     return false;
   }
 
@@ -1201,15 +1359,14 @@ function applyAnswer(match, player, rawAnswer, botMs = null) {
   }
 
   const question = match.questions[index];
-  const answer = Number(rawAnswer);
-  const correct = Number.isFinite(answer) && answer === question.answer;
+  const correct = isCorrectAnswer(rawAnswer, question.answer, match.mode);
   const config = DIFFICULTIES[match.difficulty];
   const now = Date.now();
   const startedAt = Number(player.currentQuestionStartedAt || match.startedAt || now);
   const ms = botMs === null ? clamp(now - startedAt, 0, match.durationSec * 1000) : botMs;
 
   player.answers[String(index)] = {
-    answer: Number.isFinite(answer) ? answer : null,
+    answer: sanitizeSubmittedAnswer(rawAnswer),
     correct,
     ms,
     at: now
@@ -1219,18 +1376,17 @@ function applyAnswer(match, player, rawAnswer, botMs = null) {
   player.lastAnswerAt = now;
   player.currentQuestionStartedAt = now;
 
+  const scoreDelta = calculateQuestionScore(config, ms, player.streak + 1);
+
   if (correct) {
     player.correct += 1;
     player.streak += 1;
     player.bestStreak = Math.max(player.bestStreak, player.streak);
-    const targetMs = Math.max(1600, config.botPaceMs - 900);
-    const speedBonus = Math.max(0, Math.round((targetMs - Math.min(ms, targetMs)) / 80));
-    const streakBonus = Math.min(60, player.streak * 6);
-    player.score += 100 + speedBonus + streakBonus;
+    player.score += scoreDelta;
   } else {
     player.wrong += 1;
     player.streak = 0;
-    player.score = Math.max(0, player.score - 20);
+    player.score -= scoreDelta;
   }
 
   if (player.answered >= match.questions.length) {
@@ -1334,15 +1490,14 @@ function recordStats(match) {
 function viewMatch(match, playerId) {
   tickMatch(match);
   const viewer = match.players[playerId] || null;
-  if (viewer) {
-    startPlayerRun(match, viewer);
-    tickMatch(match);
-  }
   syncMatchRecord(match);
   return {
     matchId: match.id,
     playerId,
+    mode: match.mode || "math",
     difficulty: match.difficulty,
+    quizCategory: match.quizCategory || null,
+    quizCategories: match.quizCategories || [],
     status: match.status,
     persistentStatus: match.lifecycleStatus,
     createdAt: match.createdAt,
@@ -1361,7 +1516,9 @@ function viewMatch(match, playerId) {
 }
 
 function getCurrentQuestionForPlayer(match, player) {
-  if (!player || match.status !== "active" || player.finishedAt) return null;
+  if (!player || match.status !== "active" || player.finishedAt || !player.ready || !player.runStartedAt) {
+    return null;
+  }
   const index = player.answered;
   const question = match.questions[index];
   if (!question) return null;
@@ -1380,6 +1537,7 @@ function publicPlayer(player) {
     isBot: player.isBot,
     demo: player.demo,
     paid: player.paid,
+    ready: Boolean(player.ready),
     score: player.score,
     answered: player.answered,
     correct: player.correct,
@@ -1436,6 +1594,7 @@ function createPlayer(options) {
     isBot: Boolean(options.isBot),
     demo: Boolean(options.demo),
     paid: Boolean(options.paid),
+    ready: Boolean(options.ready),
     token: options.token || "USDC",
     txHash: options.txHash || "",
     score: 0,
@@ -1453,7 +1612,66 @@ function createPlayer(options) {
   };
 }
 
-function createQuestions(difficulty) {
+function normalizeMode(mode) {
+  const key = String(mode || "math").toLowerCase();
+  return GAME_MODES[key] ? key : "math";
+}
+
+function publicQuizCategories() {
+  return Object.entries(QUIZ_CATEGORIES).map(([id, category]) => ({
+    id,
+    label: category.label,
+    questionCount: category.questions.length
+  }));
+}
+
+function normalizeQuizCategories(value, mode = "quiz") {
+  if (mode !== "quiz") return [];
+
+  const raw = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+  const allowed = new Set(Object.keys(QUIZ_CATEGORIES));
+  const selected = [...new Set(raw.map((item) => String(item).toLowerCase()))].filter((item) =>
+    allowed.has(item)
+  );
+
+  return selected.length ? selected : [...allowed];
+}
+
+function quizCategoryIntersection(left, right) {
+  const leftCategories = normalizeQuizCategories(left, "quiz");
+  const rightCategories = normalizeQuizCategories(right, "quiz");
+  const rightSet = new Set(rightCategories);
+  return leftCategories.filter((category) => rightSet.has(category));
+}
+
+function pickQuizCategory(categories) {
+  const normalized = normalizeQuizCategories(categories, "quiz");
+  return normalized[crypto.randomInt(normalized.length)];
+}
+
+function createQuestions(input) {
+  const options =
+    typeof input === "object" && input !== null ? input : { difficulty: input, mode: "math" };
+  const difficulty = DIFFICULTIES[options.difficulty] ? options.difficulty : "medium";
+  const mode = normalizeMode(options.mode);
+
+  if (mode === "quiz") {
+    return createQuizQuestions({
+      difficulty,
+      quizCategories: options.quizCategories,
+      quizCategory: options.quizCategory
+    });
+  }
+
+  return createMathQuestions(difficulty);
+}
+
+function createMathQuestions(difficulty) {
   const config = DIFFICULTIES[difficulty];
   const questions = [];
 
@@ -1485,6 +1703,57 @@ function createQuestions(difficulty) {
   }
 
   return questions;
+}
+
+function createQuizQuestions(options) {
+  const config = DIFFICULTIES[options.difficulty];
+  const quizCategory =
+    QUIZ_CATEGORIES[options.quizCategory] ? options.quizCategory : pickQuizCategory(options.quizCategories);
+  const pool = QUIZ_CATEGORIES[quizCategory].questions;
+  const questions = [];
+
+  for (let index = 0; index < config.questionCount; index += 1) {
+    const item = pool[crypto.randomInt(pool.length)];
+    questions.push({
+      expression: item.expression,
+      answer: item.answer,
+      category: quizCategory
+    });
+  }
+
+  return questions;
+}
+
+function isCorrectAnswer(submitted, expected, mode = "math") {
+  if (Array.isArray(expected)) {
+    return expected.some((answer) => isCorrectAnswer(submitted, answer, mode));
+  }
+
+  if (mode !== "quiz" && typeof expected === "number") {
+    const value = Number(submitted);
+    return Number.isFinite(value) && Math.abs(value - expected) < 0.000001;
+  }
+
+  return normalizeAnswerText(submitted) === normalizeAnswerText(expected);
+}
+
+function normalizeAnswerText(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function sanitizeSubmittedAnswer(value) {
+  return sanitizeText(String(value ?? ""), 160);
+}
+
+function calculateQuestionScore(config, ms, streak = 1) {
+  const durationMs = Math.max(1000, Number(config.durationSec || 45) * 1000);
+  const speedRatio = clamp(1 - ms / durationMs, 0, 1);
+  const speedBonus = Math.round(speedRatio * 40);
+  const streakBonus = Math.min(60, Math.max(0, Number(streak || 1) - 1) * 5);
+  return Math.max(10, 50 + speedBonus + streakBonus);
 }
 
 function cleanupWaitingMatches() {

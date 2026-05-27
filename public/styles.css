@@ -17,6 +17,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   min-height: 100%;
@@ -219,6 +223,16 @@ input:disabled {
   gap: 10px;
 }
 
+.ready-action {
+  width: 100%;
+  min-height: 54px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #211804;
+  font-weight: 1000;
+}
+
 .answer-row input {
   width: 100%;
   min-height: 54px;
@@ -325,6 +339,28 @@ input:disabled {
 
 #tokenControls {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.category-pill {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9fc;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.category-pill.active {
+  border-color: transparent;
+  background: var(--mint);
+  color: #041d17;
 }
 
 .segmented.vertical {
@@ -674,14 +710,28 @@ input:disabled {
     min-height: 62px;
   }
 
-  .arena-head,
   .stat-grid,
   .side-panel,
+  .category-grid,
   .quest-actions,
   .dev-controls,
   .leaderboard-tools,
   .chat-form {
     grid-template-columns: 1fr;
+  }
+
+  .arena-head {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .arena-head > div {
+    min-height: 58px;
+    padding: 8px;
+  }
+
+  .arena-head strong {
+    font-size: 1rem;
   }
 
   .arena-visual {

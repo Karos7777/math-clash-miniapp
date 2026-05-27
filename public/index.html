@@ -6,7 +6,7 @@
     <title>__APP_NAME__</title>
     <meta
       name="description"
-      content="1v1 speed math battles on Farcaster with Base escrow payouts."
+      content="1v1 speed battles on Farcaster with Base escrow payouts."
     >
     <meta property="og:title" content="__APP_NAME__">
     <meta
@@ -26,7 +26,7 @@
           <img src="/assets/icon.png" alt="" class="brand-mark">
           <div>
             <p class="eyebrow">Base Sepolia Arena</p>
-            <h1>Math Clash</h1>
+            <h1>Brain Clash</h1>
           </div>
         </div>
         <div class="top-actions">
@@ -66,11 +66,14 @@
           <div class="match-panel" id="matchPanel">
             <p class="status-line" id="matchStatus">Pick a token, difficulty, and enter the arena.</p>
             <div class="question" id="question">Ready?</div>
+            <button class="ready-action" id="readyButton" type="button" hidden>
+              Ready
+            </button>
             <form class="answer-row" id="answerForm">
               <input
                 id="answerInput"
-                type="number"
-                inputmode="numeric"
+                type="text"
+                inputmode="text"
                 autocomplete="off"
                 placeholder="Answer"
                 disabled
@@ -93,6 +96,19 @@
         </section>
 
         <aside class="side-panel">
+          <section class="control-block">
+            <p class="eyebrow">Mode</p>
+            <div class="segmented" id="modeControls" role="tablist" aria-label="Mode">
+              <button class="segment active" data-mode="math" type="button">Math</button>
+              <button class="segment" data-mode="quiz" type="button">Quiz</button>
+            </div>
+          </section>
+
+          <section class="control-block" id="quizCategoryBlock" hidden>
+            <p class="eyebrow">Quiz categories</p>
+            <div class="category-grid" id="quizCategories" aria-label="Quiz categories"></div>
+          </section>
+
           <section class="control-block">
             <p class="eyebrow">Token</p>
             <div class="segmented" id="tokenControls" role="tablist" aria-label="Token">
@@ -208,7 +224,7 @@
       </main>
     </div>
 
-    <script src="/config.js?v=fc3"></script>
-    <script type="module" src="/app.js?v=fc3"></script>
+    <script src="/config.js?v=fc4"></script>
+    <script type="module" src="/app.js?v=fc4"></script>
   </body>
 </html>

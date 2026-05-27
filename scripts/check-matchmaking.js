@@ -155,19 +155,46 @@ async function runScenario() {
         txHash: txHash("player2")
       }
     });
-    assert(joined2.status === "active", "second paid player starts active match");
-    assert(joined2.currentQuestion, "active match exposes only current question");
-    assert(!joined2.questions, "active match does not expose full question list");
-    assert(typeof joined2.currentQuestion.expression === "string", "current question has expression");
-    assert(!("answer" in joined2.currentQuestion), "current question does not expose answer");
+    assert(joined2.status === "matched", "second paid player creates matched match without auto-starting");
+    assert(!joined2.currentQuestion, "matched match waits for player ready before question");
 
     const restoredActive1 = await api(`/api/match/status?wallet=${wallet1}`);
-    assert(restoredActive1.matchStatus === "playing", "first player restores active match after returning");
-    assert(restoredActive1.match.currentQuestion, "first player run starts when they return");
+    assert(restoredActive1.matchStatus === "matched", "first player restores matched match after returning");
+    assert(!restoredActive1.match.currentQuestion, "first player also waits for ready after refresh");
+
+    const ready2 = await api(`/api/matches/${joined2.matchId}/ready`, {
+      method: "POST",
+      body: {
+        wallet: wallet2,
+        devPlayerId: "player2",
+        playerId: joined2.playerId
+      }
+    });
+    assert(ready2.status === "active", "ready starts only that player's timed run");
+    assert(ready2.currentQuestion, "ready player receives current question");
+    assert(!ready2.questions, "active match does not expose full question list");
+    assert(typeof ready2.currentQuestion.expression === "string", "current question has expression");
+    assert(!("answer" in ready2.currentQuestion), "current question does not expose answer");
+
+    const restoredWaitingRun1 = await api(`/api/match/status?wallet=${wallet1}`);
+    assert(restoredWaitingRun1.matchStatus === "playing", "first player sees active match after rival readies");
+    assert(!restoredWaitingRun1.match.currentQuestion, "first player still has no question before pressing ready");
+
+    const ready1 = await api(`/api/matches/${joined2.matchId}/ready`, {
+      method: "POST",
+      body: {
+        wallet: wallet1,
+        devPlayerId: "player1",
+        playerId: restoredWaitingRun1.match.playerId
+      }
+    });
+    assert(ready1.currentQuestion, "first player receives question only after pressing ready");
 
     const answered = await api(`/api/matches/${joined2.matchId}/answer`, {
       method: "POST",
       body: {
+        wallet: wallet2,
+        devPlayerId: "player2",
         playerId: joined2.playerId,
         answer: -999999,
         index: 0,
@@ -176,7 +203,9 @@ async function runScenario() {
         winner: wallet2
       }
     });
-    assert(answered.match.players.find((player) => player.id === joined2.playerId).wrong === 1, "server ignores client isCorrect/winner fields");
+    const answeredPlayer = answered.match.players.find((player) => player.id === joined2.playerId);
+    assert(answeredPlayer.wrong === 1, "server ignores client isCorrect/winner fields");
+    assert(answeredPlayer.score < 0, "wrong answer subtracts points");
     assert(answered.match.currentQuestion?.index === 1, "server advances to next question after one answer");
 
     const prodPort = PORT + 1;

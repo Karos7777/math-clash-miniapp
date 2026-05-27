@@ -2,7 +2,7 @@
   "name": "math-clash-farcaster-miniapp",
   "version": "0.1.0",
   "private": true,
-  "description": "Farcaster Mini App for 1v1 math speed battles with Base USDC/USDT entry payments.",
+  "description": "Farcaster Mini App for 1v1 brain battles with Base escrow entry payments.",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",

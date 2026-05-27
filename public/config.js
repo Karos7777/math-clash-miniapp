@@ -1,5 +1,5 @@
 window.MATH_CLASH_CONFIG = {
-  appName: "Math Clash",
+  appName: "Brain Clash",
   appUrl: window.location.origin,
   escrowAddress: "0xC481234eE58f452Cd215099848e9CA653e563F8e",
   entryFeeLabel: "0.1",

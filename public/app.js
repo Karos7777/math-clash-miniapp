@@ -1,5 +1,5 @@
 const CONFIG = {
-  appName: "Math Clash",
+  appName: "Brain Clash",
   appUrl: window.location.origin,
   escrowAddress: "",
   entryFeeLabel: "0.1",
@@ -52,6 +52,12 @@ const ENTRY_UNITS = 100000n;
 const NATIVE_ENTRY_UNITS = 100000000000000n;
 const BPS_DENOMINATOR = 10000n;
 const DEVELOPER_FEE_BPS = BigInt(CONFIG.developerFeeBps || 400);
+const DEFAULT_QUIZ_CATEGORIES = [
+  { id: "crypto", label: "Crypto" },
+  { id: "gaming", label: "Gaming" },
+  { id: "logic", label: "Logic" },
+  { id: "culture", label: "Culture" }
+];
 
 const ERC20_ABI = ["function approve(address spender, uint256 value) external returns (bool)"];
 const ESCROW_ABI = [
@@ -73,6 +79,9 @@ const state = {
   tasks: [],
   leaderboardSort: "top",
   selectedToken: "ETH",
+  mode: localStorage.getItem("math-clash:mode") || "math",
+  quizCategoryOptions: DEFAULT_QUIZ_CATEGORIES,
+  selectedQuizCategories: loadStoredQuizCategories(),
   difficulty: "medium",
   match: null,
   playerId: null,
@@ -88,6 +97,9 @@ const elements = {
   saveMiniApp: $("#saveMiniApp"),
   shareMiniApp: $("#shareMiniApp"),
   tokenControls: $("#tokenControls"),
+  modeControls: $("#modeControls"),
+  quizCategoryBlock: $("#quizCategoryBlock"),
+  quizCategories: $("#quizCategories"),
   difficultyControls: $("#difficultyControls"),
   payAndPlay: $("#payAndPlay"),
   demoPlay: $("#demoPlay"),
@@ -102,6 +114,7 @@ const elements = {
   answerForm: $("#answerForm"),
   answerInput: $("#answerInput"),
   submitAnswer: $("#submitAnswer"),
+  readyButton: $("#readyButton"),
   playerName: $("#playerName"),
   playerMeta: $("#playerMeta"),
   rivalName: $("#rivalName"),
@@ -132,8 +145,10 @@ boot();
 
 async function boot() {
   updateSelectedTokenLabels();
+  renderModeControls();
   bindEvents();
   refreshPaymentControls();
+  await loadGameOptions();
   await initMiniApp();
   await restoreSession();
   await loadLeaderboard();
@@ -145,6 +160,7 @@ function bindEvents() {
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
   elements.payAndPlay.addEventListener("click", payAndPlay);
+  elements.readyButton.addEventListener("click", markReady);
   elements.cancelMatch.addEventListener("click", cancelCurrentMatch);
   elements.demoPlay.addEventListener("click", () => joinArena({ demo: true, txHash: "" }));
   elements.refreshLeaderboard.addEventListener("click", loadLeaderboard);
@@ -196,16 +212,30 @@ function bindEvents() {
 
   elements.tokenControls.addEventListener("click", (event) => {
     const button = event.target.closest("[data-token]");
-    if (!button || state.match?.status === "active") return;
+    if (!button || !canChangeGameOptions()) return;
     state.selectedToken = button.dataset.token;
     updateSegments(elements.tokenControls, button);
     updateSelectedTokenLabels();
     refreshPaymentControls();
   });
 
+  elements.modeControls.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-mode]");
+    if (!button || !canChangeGameOptions()) return;
+    state.mode = button.dataset.mode === "quiz" ? "quiz" : "math";
+    localStorage.setItem("math-clash:mode", state.mode);
+    renderModeControls();
+  });
+
+  elements.quizCategories.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-quiz-category]");
+    if (!button || !canChangeGameOptions()) return;
+    toggleQuizCategory(button.dataset.quizCategory);
+  });
+
   elements.difficultyControls.addEventListener("click", (event) => {
     const button = event.target.closest("[data-difficulty]");
-    if (!button || state.match?.status === "active") return;
+    if (!button || !canChangeGameOptions()) return;
     state.difficulty = button.dataset.difficulty;
     updateSegments(elements.difficultyControls, button);
   });
@@ -269,7 +299,7 @@ async function shareMiniApp() {
     }
 
     await state.sdk.actions.composeCast({
-      text: "I am playing Math Clash. Beat me in a 1v1 math battle.",
+      text: `I am playing ${CONFIG.appName}. Beat me in a 1v1 brain battle.`,
       embeds: [appUrl]
     });
   } catch (error) {
@@ -280,8 +310,8 @@ async function shareMiniApp() {
 async function shareResultCast() {
   const appUrl = CONFIG.appUrl || window.location.origin;
   const me = getMe();
-  const score = me ? `${me.score} pts` : "a Math Clash run";
-  const text = `I scored ${score} in Math Clash. Try to beat me in a 1v1 math battle.`;
+  const score = me ? `${me.score} pts` : `a ${CONFIG.appName} run`;
+  const text = `I scored ${score} in ${CONFIG.appName}. Try to beat me in a 1v1 battle.`;
 
   try {
     if (typeof state.sdk?.actions?.composeCast !== "function") {
@@ -342,6 +372,19 @@ async function restoreSession() {
 async function loadProfile() {
   const response = await api(`/api/tasks?${new URLSearchParams(getIdentityPayload())}`);
   applyProfile(response);
+}
+
+async function loadGameOptions() {
+  try {
+    const health = await api("/api/health");
+    if (Array.isArray(health.quizCategories) && health.quizCategories.length) {
+      state.quizCategoryOptions = health.quizCategories;
+    }
+  } catch (error) {
+    console.info("Game options loaded from defaults:", error.message);
+  }
+  ensureQuizCategoriesSelected();
+  renderModeControls();
 }
 
 function applyProfile(response) {
@@ -675,6 +718,8 @@ async function reservePaidMatch() {
     body: {
       ...getIdentityPayload(),
       wallet,
+      mode: state.mode,
+      quizCategories: getSelectedQuizCategories(),
       difficulty: state.difficulty,
       token: state.selectedToken
     }
@@ -697,6 +742,8 @@ async function joinArena({ demo, txHash, reservation = null }) {
       matchId: reservation?.matchId,
       playerId: reservation?.playerId,
       escrowId: reservation?.payment?.escrowId,
+      mode: state.mode,
+      quizCategories: getSelectedQuizCategories(),
       difficulty: state.difficulty,
       token: state.selectedToken,
       txHash,
@@ -706,6 +753,30 @@ async function joinArena({ demo, txHash, reservation = null }) {
 
   applyMatch(response);
   startPolling();
+}
+
+async function markReady() {
+  const match = state.match;
+  if (!match || state.busy) return;
+
+  try {
+    state.busy = true;
+    refreshReadyAction();
+    const response = await api(`/api/matches/${match.matchId}/ready`, {
+      method: "POST",
+      body: {
+        ...getIdentityPayload(),
+        playerId: state.playerId
+      }
+    });
+    applyMatch(response);
+    startPolling();
+  } catch (error) {
+    setStatus(error.message || "Could not start your run.");
+  } finally {
+    state.busy = false;
+    refreshReadyAction();
+  }
 }
 
 async function submitCurrentAnswer() {
@@ -721,8 +792,9 @@ async function submitCurrentAnswer() {
   const response = await api(`/api/matches/${match.matchId}/answer`, {
     method: "POST",
     body: {
+      ...getIdentityPayload(),
       playerId: state.playerId,
-      answer: Number(answer)
+      answer
     }
   });
 
@@ -735,7 +807,9 @@ function applyMatch(match) {
 
   state.match = match;
   state.playerId = match.playerId || state.playerId;
+  syncGameControlsFromMatch(match);
   refreshMatchActions();
+  refreshReadyAction();
 
   const me = getMe();
   const rival = getRival();
@@ -768,7 +842,22 @@ function applyMatch(match) {
     toggleAnswer(false);
   }
 
+  if (match.status === "matched") {
+    setStatus("Opponent found. Press Ready when you want to start.");
+    setQuestion("Ready?");
+    toggleAnswer(false);
+    if (!state.pollId) startPolling();
+  }
+
   if (match.status === "active") {
+    if (!me?.ready || !me.runStartedAt) {
+      setStatus("Opponent found. Press Ready when you want to start.");
+      setQuestion("Ready?");
+      toggleAnswer(false);
+      if (!state.pollId) startPolling();
+      return;
+    }
+
     if (me?.finishedAt && !match.currentQuestion) {
       setQuestion("Done");
       setStatus("Waiting for rival result...");
@@ -786,8 +875,10 @@ function applyMatch(match) {
     if (shouldRenderQuestion) {
       renderQuestion();
     }
-    toggleAnswer(true);
-    setStatus("Clash live.");
+    toggleAnswer(Boolean(match.currentQuestion));
+    if (match.currentQuestion) {
+      setStatus("Clash live.");
+    }
     if (!state.timerId) {
       startTimer();
     }
@@ -813,6 +904,14 @@ function applyMatch(match) {
 function renderQuestion() {
   const match = state.match;
   if (!match || match.status !== "active") return;
+  const me = getMe();
+
+  if (!me?.ready || !me.runStartedAt) {
+    setQuestion("Ready?");
+    setStatus("Opponent found. Press Ready when you want to start.");
+    toggleAnswer(false);
+    return;
+  }
 
   if (!match.currentQuestion) {
     setQuestion("Done");
@@ -870,7 +969,7 @@ async function finishMatch() {
   if (!match) return;
   const response = await api(`/api/matches/${match.matchId}/finish`, {
     method: "POST",
-    body: { playerId: state.playerId }
+    body: { ...getIdentityPayload(), playerId: state.playerId }
   });
   applyMatch(response);
 }
@@ -998,11 +1097,19 @@ function updateSegments(container, activeButton) {
   });
 }
 
+function updateActiveButton(container, dataName, value) {
+  container.querySelectorAll(`[data-${dataName}]`).forEach((button) => {
+    button.classList.toggle("active", button.dataset[dataName] === value);
+  });
+}
+
 function refreshPaymentControls() {
   const hasEscrow = isUsableEscrow();
   const hasToken = isSelectedTokenConfigured();
-  elements.payAndPlay.disabled = state.busy || !hasEscrow || !hasToken;
+  const lockedInMatch = !canChangeGameOptions();
+  elements.payAndPlay.disabled = state.busy || lockedInMatch || !hasEscrow || !hasToken;
   elements.demoPlay.hidden = !CONFIG.demoMode;
+  elements.demoPlay.disabled = state.busy || lockedInMatch;
 
   if (!hasEscrow) {
     elements.paymentStatus.textContent = "Escrow not configured.";
@@ -1028,6 +1135,98 @@ function refreshMatchActions() {
   elements.cancelMatch.disabled = state.busy || Date.now() < availableAt;
   elements.cancelMatch.textContent =
     Date.now() >= availableAt ? "Cancel / Refund" : "Refund unlocks later";
+}
+
+function refreshReadyAction() {
+  const match = state.match;
+  const me = getMe();
+  const canReady =
+    Boolean(match) &&
+    ["matched", "active"].includes(match.status) &&
+    Boolean(me) &&
+    !me.ready &&
+    !me.finishedAt &&
+    match.players.length >= 2;
+  elements.readyButton.hidden = !canReady;
+  elements.readyButton.disabled = state.busy || !canReady;
+}
+
+function syncGameControlsFromMatch(match) {
+  if (!match || ["finished", "refunded"].includes(match.status)) return;
+
+  state.mode = match.mode || state.mode;
+  state.difficulty = match.difficulty || state.difficulty;
+  state.selectedToken = match.payment?.token || state.selectedToken;
+  if (Array.isArray(match.quizCategories) && match.quizCategories.length) {
+    state.selectedQuizCategories = match.quizCategories;
+  }
+
+  updateActiveButton(elements.tokenControls, "token", state.selectedToken);
+  updateActiveButton(elements.difficultyControls, "difficulty", state.difficulty);
+  updateSelectedTokenLabels();
+  renderModeControls();
+  refreshPaymentControls();
+}
+
+function renderModeControls() {
+  elements.modeControls.querySelectorAll("[data-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.mode === state.mode);
+  });
+  elements.quizCategoryBlock.hidden = state.mode !== "quiz";
+  renderQuizCategories();
+}
+
+function renderQuizCategories() {
+  if (!elements.quizCategories) return;
+  ensureQuizCategoriesSelected();
+  elements.quizCategories.innerHTML = "";
+  state.quizCategoryOptions.forEach((category) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "category-pill";
+    button.dataset.quizCategory = category.id;
+    button.classList.toggle("active", state.selectedQuizCategories.includes(category.id));
+    button.textContent = category.label || category.id;
+    elements.quizCategories.append(button);
+  });
+}
+
+function toggleQuizCategory(categoryId) {
+  const id = String(categoryId || "");
+  if (!state.quizCategoryOptions.some((category) => category.id === id)) return;
+
+  const selected = new Set(getSelectedQuizCategories());
+  if (selected.has(id)) {
+    if (selected.size <= 1) {
+      setStatus("Leave at least one quiz category selected.");
+      return;
+    }
+    selected.delete(id);
+  } else {
+    selected.add(id);
+  }
+
+  state.selectedQuizCategories = [...selected];
+  localStorage.setItem("math-clash:quiz-categories", JSON.stringify(state.selectedQuizCategories));
+  renderQuizCategories();
+}
+
+function ensureQuizCategoriesSelected() {
+  const available = state.quizCategoryOptions.map((category) => category.id);
+  state.selectedQuizCategories = state.selectedQuizCategories.filter((id) => available.includes(id));
+  if (!state.selectedQuizCategories.length) {
+    state.selectedQuizCategories = [...available];
+  }
+}
+
+function getSelectedQuizCategories() {
+  if (state.mode !== "quiz") return [];
+  ensureQuizCategoriesSelected();
+  return state.selectedQuizCategories;
+}
+
+function canChangeGameOptions() {
+  return !state.match || ["finished", "refunded"].includes(state.match.status);
 }
 
 function renderDevMode() {
@@ -1182,6 +1381,15 @@ function formatTokenUnits(units, decimals = 6) {
   const whole = units / base;
   const fraction = (units % base).toString().padStart(decimals, "0").replace(/0+$/, "");
   return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function loadStoredQuizCategories() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("math-clash:quiz-categories") || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function toHexQuantity(value) {

@@ -1,6 +1,6 @@
-# Math Clash Farcaster Mini App
+# Brain Clash Farcaster Mini App
 
-1v1 speed math battles for Farcaster Mini Apps with Base Sepolia escrow testing, local matchmaking, stats, and leaderboard.
+1v1 speed battles for Farcaster Mini Apps with Base Sepolia escrow testing, local matchmaking, quizzes, stats, and leaderboard.
 
 ## Contract summary
 
@@ -62,7 +62,7 @@ The server now serves the Mini App manifest dynamically at:
 Set the public URL before deploying:
 
 ```bash
-APP_NAME=Math Clash
+APP_NAME=Brain Clash
 APP_URL=https://your-real-domain.example
 ```
 
@@ -105,14 +105,16 @@ Identity priority is:
 2. Connected wallet address
 3. `devPlayerId` only when `DEV_MODE=true` or `NODE_ENV !== production`
 
-If a player has already paid and is waiting for an opponent, refresh now restores the same searching match. If the second player has joined, refresh restores the active game. Finished matches show result and settlement status.
+If a player has already paid and is waiting for an opponent, refresh now restores the same searching match. If the second player has joined, refresh restores the matched game. Finished matches show result and settlement status.
 
 Paid matchmaking is asynchronous:
 
 - Player 1 can pay, leave the Mini App, and come back later.
-- Player 2 can join and start their run immediately.
-- Player 1's personal match timer starts when they return to the active match.
+- Player 2 can join and press Ready to start their own run immediately.
+- Player 1's personal match timer starts only when they return and press Ready.
 - The match has a 48 hour deadline from the moment both players are funded.
+- Wrong answers subtract the same score amount that the question would have awarded.
+- The app has Math Clash and Quiz Clash modes. Quiz categories are selectable before payment.
 
 Anti-cheat basics:
 
