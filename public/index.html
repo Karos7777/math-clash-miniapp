@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__APP_NAME__</title>
+    <meta
+      name="description"
+      content="1v1 speed math battles on Farcaster with Base escrow payouts."
+    >
+    <meta property="og:title" content="__APP_NAME__">
+    <meta
+      property="og:description"
+      content="Beat your rival on speed, accuracy, and streaks."
+    >
+    <meta property="og:image" content="__APP_URL__/assets/og.png">
+    <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
+    <meta name="fc:frame" content='__FRAME_EMBED_JSON__'>
+    <link rel="icon" href="/assets/icon.png">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img src="/assets/icon.png" alt="" class="brand-mark">
+          <div>
+            <p class="eyebrow">Base Sepolia Arena</p>
+            <h1>Math Clash</h1>
+          </div>
+        </div>
+        <button class="wallet-pill" id="connectWallet" type="button">
+          Connect
+        </button>
+      </header>
+
+      <main class="layout">
+        <section class="play-surface" aria-live="polite">
+          <div class="arena-head">
+            <div>
+              <p class="eyebrow">Stake</p>
+              <strong><span id="entryFeeLabel">0.0001</span> <span id="tokenLabel">ETH</span></strong>
+            </div>
+            <div>
+              <p class="eyebrow">Timer</p>
+              <strong id="timer">--</strong>
+            </div>
+            <div>
+              <p class="eyebrow">Score</p>
+              <strong id="score">0</strong>
+            </div>
+          </div>
+
+          <div class="arena-visual" aria-hidden="true">
+            <img src="/assets/arena.svg" alt="">
+          </div>
+
+          <div class="match-panel" id="matchPanel">
+            <p class="status-line" id="matchStatus">Pick a token, difficulty, and enter the arena.</p>
+            <div class="question" id="question">Ready?</div>
+            <form class="answer-row" id="answerForm">
+              <input
+                id="answerInput"
+                type="number"
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="Answer"
+                disabled
+              >
+              <button id="submitAnswer" type="submit" disabled>Hit</button>
+            </form>
+          </div>
+
+          <div class="versus" id="versus">
+            <div class="fighter">
+              <span class="fighter-name" id="playerName">You</span>
+              <span class="fighter-score" id="playerMeta">0 solved</span>
+            </div>
+            <div class="vs-mark">VS</div>
+            <div class="fighter rival">
+              <span class="fighter-name" id="rivalName">Waiting</span>
+              <span class="fighter-score" id="rivalMeta">0 solved</span>
+            </div>
+          </div>
+        </section>
+
+        <aside class="side-panel">
+          <section class="control-block">
+            <p class="eyebrow">Token</p>
+            <div class="segmented" id="tokenControls" role="tablist" aria-label="Token">
+              <button class="segment active" data-token="ETH" type="button">ETH</button>
+              <button class="segment" data-token="USDC" type="button">USDC</button>
+              <button class="segment" data-token="USDT" type="button">USDT</button>
+            </div>
+          </section>
+
+          <section class="control-block">
+            <p class="eyebrow">Difficulty</p>
+            <div class="segmented vertical" id="difficultyControls" role="tablist" aria-label="Difficulty">
+              <button class="segment" data-difficulty="easy" type="button">Easy</button>
+              <button class="segment active" data-difficulty="medium" type="button">Medium</button>
+              <button class="segment" data-difficulty="hard" type="button">Hard</button>
+            </div>
+          </section>
+
+          <section class="control-block">
+            <button class="primary-action" id="payAndPlay" type="button">
+              Pay & Play
+            </button>
+            <button class="secondary-action" id="demoPlay" type="button">
+              Demo Clash
+            </button>
+            <p class="payment-note" id="paymentStatus">Escrow not configured.</p>
+          </section>
+        </aside>
+
+        <section class="stats-panel">
+          <div class="stat-grid" id="statsGrid">
+            <div>
+              <span>Matches</span>
+              <strong id="statMatches">0</strong>
+            </div>
+            <div>
+              <span>Wins</span>
+              <strong id="statWins">0</strong>
+            </div>
+            <div>
+              <span>Best</span>
+              <strong id="statBest">0</strong>
+            </div>
+            <div>
+              <span>Accuracy</span>
+              <strong id="statAccuracy">0%</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="leaderboard-panel">
+          <div class="section-title">
+            <p class="eyebrow">Leaderboard</p>
+            <button id="refreshLeaderboard" type="button" class="ghost-button">Refresh</button>
+          </div>
+          <ol class="leaderboard" id="leaderboard"></ol>
+        </section>
+      </main>
+    </div>
+
+    <script src="/config.js?v=fc1"></script>
+    <script type="module" src="/app.js?v=fc1"></script>
+  </body>
+</html>

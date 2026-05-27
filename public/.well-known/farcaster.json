@@ -1,0 +1,21 @@
+{
+  "miniapp": {
+    "version": "1",
+    "name": "Math Clash",
+    "iconUrl": "https://your-domain.example/assets/icon.png",
+    "homeUrl": "https://your-domain.example",
+    "splashImageUrl": "https://your-domain.example/assets/splash.png",
+    "splashBackgroundColor": "#111318",
+    "subtitle": "1v1 math battles",
+    "description": "Battle 1v1 on speed and accuracy with Base Sepolia ETH escrow entry.",
+    "primaryCategory": "games",
+    "tags": ["math", "battle", "base", "usdc", "leaderboard"],
+    "heroImageUrl": "https://your-domain.example/assets/og.png",
+    "tagline": "Win the equation race",
+    "ogTitle": "Math Clash",
+    "ogDescription": "Beat your rival on speed, accuracy, and streaks.",
+    "ogImageUrl": "https://your-domain.example/assets/og.png",
+    "requiredChains": ["eip155:84532"],
+    "requiredCapabilities": ["wallet.getEthereumProvider"]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "math-clash-farcaster-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Farcaster Mini App for 1v1 math speed battles with Base USDC/USDT entry payments.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "assets": "node tools/generate-assets.js",
+    "compile": "hardhat compile",
+    "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
+    "check:escrow": "node scripts/check-escrow.js",
+    "check:miniapp": "node scripts/check-miniapp.js",
+    "check:resolver": "node scripts/check-resolver.js",
+    "set:resolver": "node scripts/set-resolver.js",
+    "settle:match": "node scripts/settle-match.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.5"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "hardhat": "^2.22.19"
+  },
+  "engines": {
+    "node": ">=22.11.0"
+  }
+}
