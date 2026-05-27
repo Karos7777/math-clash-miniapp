@@ -64,6 +64,12 @@ input:disabled {
   margin-bottom: 18px;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -92,7 +98,8 @@ input:disabled {
 }
 
 .wallet-pill,
-.ghost-button {
+.ghost-button,
+.miniapp-action {
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -101,6 +108,11 @@ input:disabled {
   padding: 0 14px;
   font-weight: 800;
   box-shadow: 0 8px 20px rgba(17, 19, 24, 0.06);
+}
+
+.miniapp-action {
+  background: var(--charcoal);
+  color: #ffffff;
 }
 
 .layout {
@@ -446,7 +458,14 @@ input:disabled {
     flex-direction: column;
   }
 
-  .wallet-pill {
+  .top-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .wallet-pill,
+  .miniapp-action {
     width: 100%;
   }
 

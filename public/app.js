@@ -76,6 +76,8 @@ const state = {
 const $ = (selector) => document.querySelector(selector);
 const elements = {
   connectWallet: $("#connectWallet"),
+  saveMiniApp: $("#saveMiniApp"),
+  shareMiniApp: $("#shareMiniApp"),
   tokenControls: $("#tokenControls"),
   difficultyControls: $("#difficultyControls"),
   payAndPlay: $("#payAndPlay"),
@@ -114,6 +116,8 @@ async function boot() {
 
 function bindEvents() {
   elements.connectWallet.addEventListener("click", connectWallet);
+  elements.saveMiniApp.addEventListener("click", saveMiniApp);
+  elements.shareMiniApp.addEventListener("click", shareMiniApp);
   elements.payAndPlay.addEventListener("click", payAndPlay);
   elements.demoPlay.addEventListener("click", () => joinArena({ demo: true, txHash: "" }));
   elements.refreshLeaderboard.addEventListener("click", loadLeaderboard);
@@ -145,8 +149,47 @@ async function initMiniApp() {
     const module = await import("https://esm.sh/@farcaster/miniapp-sdk");
     state.sdk = module.sdk;
     await state.sdk.actions.ready();
+    refreshMiniAppActions();
   } catch (error) {
     console.info("Farcaster SDK not available in this environment:", error.message);
+  }
+}
+
+function refreshMiniAppActions() {
+  const actions = state.sdk?.actions || {};
+  elements.saveMiniApp.hidden = typeof actions.addMiniApp !== "function";
+  elements.shareMiniApp.hidden = typeof actions.composeCast !== "function";
+}
+
+async function saveMiniApp() {
+  try {
+    if (typeof state.sdk?.actions?.addMiniApp !== "function") {
+      setStatus("Open in Farcaster to save this Mini App.");
+      return;
+    }
+
+    await state.sdk.actions.addMiniApp();
+    setStatus("Mini App saved in Farcaster.");
+  } catch (error) {
+    setStatus(getMiniAppActionErrorMessage(error, "Could not save Mini App."));
+  }
+}
+
+async function shareMiniApp() {
+  const appUrl = CONFIG.appUrl || window.location.origin;
+
+  try {
+    if (typeof state.sdk?.actions?.composeCast !== "function") {
+      setStatus("Open in Farcaster to share this Mini App.");
+      return;
+    }
+
+    await state.sdk.actions.composeCast({
+      text: "I am playing Math Clash. Beat me in a 1v1 math battle.",
+      embeds: [appUrl]
+    });
+  } catch (error) {
+    setStatus(getMiniAppActionErrorMessage(error, "Could not open Farcaster composer."));
   }
 }
 
@@ -304,6 +347,17 @@ function getWalletErrorMessage(error, fallback) {
   }
   if (message.includes("Cannot read properties of undefined")) {
     return "Wallet provider failed. Refresh the page and try Rabby again.";
+  }
+  return message || fallback;
+}
+
+function getMiniAppActionErrorMessage(error, fallback) {
+  const message = String(error?.message || error || "");
+  if (message.includes("RejectedByUser") || message.toLowerCase().includes("rejected")) {
+    return "Farcaster request rejected.";
+  }
+  if (message.includes("InvalidDomainManifestJson")) {
+    return "Farcaster manifest needs account association for this domain.";
   }
   return message || fallback;
 }

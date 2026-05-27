@@ -348,6 +348,7 @@ function buildMiniAppManifest(req) {
     version: "1",
     name: APP_NAME.slice(0, 32),
     homeUrl: appUrl,
+    canonicalDomain: getCanonicalDomain(appUrl),
     iconUrl: `${appUrl}/assets/icon.png`,
     splashImageUrl: `${appUrl}/assets/splash.png`,
     splashBackgroundColor: "#111318",
@@ -361,7 +362,12 @@ function buildMiniAppManifest(req) {
     ogDescription: "Fast 1v1 math battles with Base escrow payouts.",
     ogImageUrl: `${appUrl}/assets/og.png`,
     requiredChains: [`eip155:${BASE_CHAIN_ID}`],
-    requiredCapabilities: ["actions.ready", "wallet.getEthereumProvider"],
+    requiredCapabilities: [
+      "actions.ready",
+      "actions.addMiniApp",
+      "actions.composeCast",
+      "wallet.getEthereumProvider"
+    ],
     noindex
   });
 }
@@ -435,6 +441,14 @@ function normalizeAppUrl(value) {
   return String(value || "")
     .trim()
     .replace(/\/+$/, "");
+}
+
+function getCanonicalDomain(value) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return "";
+  }
 }
 
 function escapeHtmlText(value) {
