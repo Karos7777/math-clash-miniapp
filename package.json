@@ -9,8 +9,10 @@
     "assets": "node tools/generate-assets.js",
     "compile": "hardhat compile",
     "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
+    "check:storage": "node scripts/check-storage.js",
     "check:escrow": "node scripts/check-escrow.js",
     "check:miniapp": "node scripts/check-miniapp.js",
+    "check:matchmaking": "node scripts/check-matchmaking.js",
     "check:resolver": "node scripts/check-resolver.js",
     "set:resolver": "node scripts/set-resolver.js",
     "settle:match": "node scripts/settle-match.js"

@@ -118,9 +118,24 @@
             <button class="secondary-action" id="demoPlay" type="button">
               Demo Clash
             </button>
+            <button class="secondary-action" id="cancelMatch" type="button" hidden>
+              Cancel / Refund
+            </button>
             <p class="payment-note" id="paymentStatus">Escrow not configured.</p>
           </section>
         </aside>
+
+        <section class="dev-panel" id="devPanel" hidden>
+          <div class="section-title">
+            <p class="eyebrow">Dev Mode</p>
+            <button id="resetDevState" type="button" class="ghost-button">Reset</button>
+          </div>
+          <div class="dev-controls">
+            <button class="segment active" data-dev-player="player1" type="button">player1</button>
+            <button class="segment" data-dev-player="player2" type="button">player2</button>
+            <button class="segment" data-dev-player="player3" type="button">player3</button>
+          </div>
+        </section>
 
         <section class="stats-panel">
           <div class="stat-grid" id="statsGrid">
@@ -143,17 +158,57 @@
           </div>
         </section>
 
+        <section class="xp-panel">
+          <div class="section-title">
+            <p class="eyebrow">XP</p>
+            <strong id="xpLevel">Level 1</strong>
+          </div>
+          <div class="xp-summary">
+            <strong id="xpTotal">0 XP</strong>
+            <span>XP may be used for future rewards if the project continues.</span>
+          </div>
+          <ol class="xp-history" id="xpHistory"></ol>
+        </section>
+
+        <section class="quests-panel">
+          <div class="section-title">
+            <p class="eyebrow">Quests</p>
+            <button id="refreshQuests" type="button" class="ghost-button">Refresh</button>
+          </div>
+          <div class="quests-list" id="questsList"></div>
+        </section>
+
         <section class="leaderboard-panel">
           <div class="section-title">
             <p class="eyebrow">Leaderboard</p>
             <button id="refreshLeaderboard" type="button" class="ghost-button">Refresh</button>
           </div>
+          <div class="leaderboard-tools">
+            <div class="segmented compact" id="leaderboardSort">
+              <button class="segment active" data-sort="top" type="button">Top</button>
+              <button class="segment" data-sort="worst" type="button">Worst</button>
+            </div>
+            <input id="leaderboardSearch" type="search" placeholder="Find wallet">
+          </div>
           <ol class="leaderboard" id="leaderboard"></ol>
+        </section>
+
+        <section class="chat-panel">
+          <div class="section-title">
+            <p class="eyebrow">Chat</p>
+            <button id="refreshChat" type="button" class="ghost-button">Refresh</button>
+          </div>
+          <div class="last-chat" id="lastChat">No messages yet.</div>
+          <form class="chat-form" id="chatForm">
+            <input id="chatInput" type="text" maxlength="180" placeholder="Looking for medium mode">
+            <button type="submit">Send</button>
+          </form>
+          <ol class="chat-list" id="chatList"></ol>
         </section>
       </main>
     </div>
 
-    <script src="/config.js?v=fc2"></script>
-    <script type="module" src="/app.js?v=fc2"></script>
+    <script src="/config.js?v=fc3"></script>
+    <script type="module" src="/app.js?v=fc3"></script>
   </body>
 </html>

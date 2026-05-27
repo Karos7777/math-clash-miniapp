@@ -90,6 +90,117 @@ npm run check:miniapp
 
 The check warns if `accountAssociation` is missing. That is expected locally, but production publishing needs it.
 
+## Persistent matchmaking, XP, and quests
+
+The app restores active player state from the server on page load through:
+
+```text
+/api/me
+/api/match/status
+```
+
+Identity priority is:
+
+1. Farcaster `fid`
+2. Connected wallet address
+3. `devPlayerId` only when `DEV_MODE=true` or `NODE_ENV !== production`
+
+If a player has already paid and is waiting for an opponent, refresh now restores the same searching match. If the second player has joined, refresh restores the active game. Finished matches show result and settlement status.
+
+Paid matchmaking is asynchronous:
+
+- Player 1 can pay, leave the Mini App, and come back later.
+- Player 2 can join and start their run immediately.
+- Player 1's personal match timer starts when they return to the active match.
+- The match has a 48 hour deadline from the moment both players are funded.
+
+Anti-cheat basics:
+
+- The frontend sends only the player's raw answer.
+- The server checks correctness.
+- The server sends only the current question, not the whole question list.
+- Correct answers are never sent to the frontend.
+- Answer timing is calculated on the server.
+- Winner selection is server-side only.
+
+The chat endpoint is persistent across refresh:
+
+```text
+GET /api/chat
+POST /api/chat
+```
+
+It keeps the latest messages so players can coordinate, for example to say they are looking for a medium mode match.
+
+XP is off-chain only for now. The app intentionally says:
+
+```text
+XP may be used for future rewards if the project continues.
+```
+
+It does not promise a token or guaranteed airdrop.
+
+Initial XP rules:
+
+- Play first match: `+10 XP`
+- Daily first match: `+10 XP`
+- Finish match: `+10 XP`
+- Win match: `+25 XP`
+- Share result quest: manual/pending claim for `+20 XP`
+- Invite friend quest: manual/pending claim for `+50 XP`
+
+Social quests that require Farcaster verification are stored as pending manual claims unless a real Farcaster/Neynar verification API is added later.
+
+## Storage
+
+The storage abstraction lives in `storage/index.js`.
+
+Default local/dev storage is JSON:
+
+```text
+data/state.json
+```
+
+You can override it for tests:
+
+```bash
+MATH_CLASH_STATE_FILE=/tmp/math-clash-state.json
+```
+
+For production, the app recognizes these database env vars so Supabase/Postgres can be wired in without changing the public frontend:
+
+```bash
+DATABASE_URL=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+If no database env is present, it falls back to local JSON storage. On Render Free this is better than in-memory state, but a real database is still recommended before mainnet.
+
+## Dev testing mode
+
+Local/dev mode shows a small Dev Mode panel with:
+
+- `player1`
+- `player2`
+- `player3`
+- Reset button
+
+Dev mode is enabled when:
+
+```bash
+DEV_MODE=true
+```
+
+or when `NODE_ENV` is not `production`. It is disabled in production and `devPlayerId` is ignored there.
+
+Checks:
+
+```bash
+npm run check:storage
+npm run check:matchmaking
+```
+
 ## Base Sepolia settings
 
 The project is configured for Base Sepolia by default:

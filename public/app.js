@@ -54,19 +54,28 @@ const BPS_DENOMINATOR = 10000n;
 const DEVELOPER_FEE_BPS = BigInt(CONFIG.developerFeeBps || 400);
 
 const ERC20_ABI = ["function approve(address spender, uint256 value) external returns (bool)"];
-const ESCROW_ABI = ["function deposit(bytes32 matchId, address token) external"];
+const ESCROW_ABI = [
+  "function deposit(bytes32 matchId, address token) external",
+  "function cancelUnmatched(bytes32 matchId) external"
+];
 
 const state = {
   sdk: null,
+  fid: null,
+  username: "",
   provider: null,
   ethers: null,
   account: null,
+  devMode: false,
+  devPlayerId: localStorage.getItem("math-clash:dev-player") || "player1",
+  profile: null,
+  xp: null,
+  tasks: [],
+  leaderboardSort: "top",
   selectedToken: "ETH",
   difficulty: "medium",
   match: null,
   playerId: null,
-  currentIndex: 0,
-  questionStartedAt: 0,
   localScore: 0,
   timerId: null,
   pollId: null,
@@ -82,6 +91,7 @@ const elements = {
   difficultyControls: $("#difficultyControls"),
   payAndPlay: $("#payAndPlay"),
   demoPlay: $("#demoPlay"),
+  cancelMatch: $("#cancelMatch"),
   paymentStatus: $("#paymentStatus"),
   tokenLabel: $("#tokenLabel"),
   entryFeeLabel: $("#entryFeeLabel"),
@@ -101,7 +111,21 @@ const elements = {
   statBest: $("#statBest"),
   statAccuracy: $("#statAccuracy"),
   leaderboard: $("#leaderboard"),
-  refreshLeaderboard: $("#refreshLeaderboard")
+  refreshLeaderboard: $("#refreshLeaderboard"),
+  leaderboardSort: $("#leaderboardSort"),
+  leaderboardSearch: $("#leaderboardSearch"),
+  refreshChat: $("#refreshChat"),
+  chatForm: $("#chatForm"),
+  chatInput: $("#chatInput"),
+  chatList: $("#chatList"),
+  lastChat: $("#lastChat"),
+  devPanel: $("#devPanel"),
+  resetDevState: $("#resetDevState"),
+  xpLevel: $("#xpLevel"),
+  xpTotal: $("#xpTotal"),
+  xpHistory: $("#xpHistory"),
+  questsList: $("#questsList"),
+  refreshQuests: $("#refreshQuests")
 };
 
 boot();
@@ -111,7 +135,9 @@ async function boot() {
   bindEvents();
   refreshPaymentControls();
   await initMiniApp();
+  await restoreSession();
   await loadLeaderboard();
+  await loadChat();
 }
 
 function bindEvents() {
@@ -119,8 +145,54 @@ function bindEvents() {
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
   elements.payAndPlay.addEventListener("click", payAndPlay);
+  elements.cancelMatch.addEventListener("click", cancelCurrentMatch);
   elements.demoPlay.addEventListener("click", () => joinArena({ demo: true, txHash: "" }));
   elements.refreshLeaderboard.addEventListener("click", loadLeaderboard);
+  elements.leaderboardSort.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-sort]");
+    if (!button) return;
+    state.leaderboardSort = button.dataset.sort;
+    updateSegments(elements.leaderboardSort, button);
+    await loadLeaderboard();
+  });
+  elements.leaderboardSearch.addEventListener("input", debounce(loadLeaderboard, 250));
+  elements.refreshChat.addEventListener("click", loadChat);
+  elements.chatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await sendChatMessage();
+  });
+  elements.refreshQuests.addEventListener("click", loadProfile);
+  elements.resetDevState.addEventListener("click", resetDevState);
+  elements.questsList.addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-task-id]");
+    if (!card) return;
+    const taskId = card.dataset.taskId;
+    const input = card.querySelector("[data-proof-input]");
+    const status = card.querySelector("[data-claim-status]");
+
+    if (event.target.closest("[data-share-result]")) {
+      await shareResultCast();
+      return;
+    }
+
+    if (event.target.closest("[data-claim-task]")) {
+      try {
+        await claimQuest(taskId, input?.value || "");
+        if (status) status.textContent = "Claim submitted for review.";
+      } catch (error) {
+        if (status) status.textContent = error.message;
+      }
+    }
+  });
+
+  document.querySelectorAll("[data-dev-player]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.devPlayerId = button.dataset.devPlayer;
+      localStorage.setItem("math-clash:dev-player", state.devPlayerId);
+      updateDevButtons();
+      await restoreSession();
+    });
+  });
 
   elements.tokenControls.addEventListener("click", (event) => {
     const button = event.target.closest("[data-token]");
@@ -148,10 +220,22 @@ async function initMiniApp() {
   try {
     const module = await import("https://esm.sh/@farcaster/miniapp-sdk");
     state.sdk = module.sdk;
+    await loadFarcasterContext();
     await state.sdk.actions.ready();
     refreshMiniAppActions();
   } catch (error) {
     console.info("Farcaster SDK not available in this environment:", error.message);
+  }
+}
+
+async function loadFarcasterContext() {
+  try {
+    const context = await Promise.resolve(state.sdk?.context);
+    const user = context?.user || {};
+    state.fid = user.fid || null;
+    state.username = user.username || user.displayName || "";
+  } catch (error) {
+    console.info("Farcaster context unavailable:", error.message);
   }
 }
 
@@ -193,6 +277,28 @@ async function shareMiniApp() {
   }
 }
 
+async function shareResultCast() {
+  const appUrl = CONFIG.appUrl || window.location.origin;
+  const me = getMe();
+  const score = me ? `${me.score} pts` : "a Math Clash run";
+  const text = `I scored ${score} in Math Clash. Try to beat me in a 1v1 math battle.`;
+
+  try {
+    if (typeof state.sdk?.actions?.composeCast !== "function") {
+      setStatus("Open in Farcaster to share your result.");
+      return;
+    }
+
+    await state.sdk.actions.composeCast({
+      text,
+      embeds: [appUrl]
+    });
+    setStatus("After publishing, paste the cast URL in the quest proof field.");
+  } catch (error) {
+    setStatus(getMiniAppActionErrorMessage(error, "Could not open Farcaster composer."));
+  }
+}
+
 async function connectWallet() {
   setStatus("Connecting wallet...");
   try {
@@ -208,10 +314,56 @@ async function connectWallet() {
     elements.connectWallet.textContent = shortAddress(state.account);
     setStatus("Wallet connected.");
     refreshPaymentControls();
-    await loadStats();
+    await restoreSession();
   } catch (error) {
     setStatus(getWalletErrorMessage(error, "Wallet connection failed."));
   }
+}
+
+async function restoreSession() {
+  try {
+    const response = await api(`/api/me?${new URLSearchParams(getIdentityPayload())}`);
+    applyProfile(response);
+
+    if (response.match) {
+      applyMatch(response.match);
+      if (response.match.status !== "finished" && response.match.status !== "refunded") {
+        startPolling();
+      }
+    } else if (!state.match) {
+      setStatus("Pick a token, difficulty, and enter the arena.");
+      setQuestion("Ready?");
+    }
+  } catch (error) {
+    console.info("Session restore skipped:", error.message);
+  }
+}
+
+async function loadProfile() {
+  const response = await api(`/api/tasks?${new URLSearchParams(getIdentityPayload())}`);
+  applyProfile(response);
+}
+
+function applyProfile(response) {
+  if (typeof response.devMode !== "undefined") {
+    state.devMode = Boolean(response.devMode);
+  }
+  state.profile = response.player || state.profile;
+  state.xp = response.xp || state.xp;
+  state.tasks = response.tasks || state.tasks || [];
+  renderDevMode();
+  renderXp(response.xpEvents || []);
+  renderQuests();
+}
+
+function getIdentityPayload() {
+  const wallet = state.account || localStorage.getItem("math-clash:last-wallet") || "";
+  return {
+    fid: state.fid || "",
+    username: state.username || "",
+    wallet,
+    devPlayerId: state.devPlayerId || ""
+  };
 }
 
 async function getWalletProvider() {
@@ -292,6 +444,60 @@ async function payAndPlay() {
   } finally {
     state.busy = false;
     refreshPaymentControls();
+  }
+}
+
+async function cancelCurrentMatch() {
+  const match = state.match;
+  if (!match?.payment?.escrowId) return;
+
+  const availableAt = Number(match.payment.cancelAvailableAt || 0);
+  if (availableAt && Date.now() < availableAt) {
+    const minutes = Math.ceil((availableAt - Date.now()) / 60000);
+    setStatus(`Refund unlocks in about ${minutes} min if no opponent joins.`);
+    return;
+  }
+
+  try {
+    state.busy = true;
+    refreshPaymentControls();
+    refreshMatchActions();
+
+    if (!state.account) {
+      await connectWallet();
+    }
+    if (!state.provider || !state.account) {
+      setStatus("Connect the funding wallet to cancel.");
+      return;
+    }
+
+    await ensureBaseChain(state.provider);
+    setStatus("Submitting unmatched refund...");
+    const txHash = await sendContractCall({
+      provider: state.provider,
+      from: state.account,
+      to: CONFIG.escrowAddress,
+      abi: ESCROW_ABI,
+      functionName: "cancelUnmatched",
+      args: [match.payment.escrowId]
+    });
+    await waitForTransactionSuccess(state.provider, txHash);
+    const response = await api(`/api/matches/${match.matchId}/refund`, {
+      method: "POST",
+      body: {
+        ...getIdentityPayload(),
+        playerId: state.playerId,
+        txHash
+      }
+    });
+    applyMatch(response);
+    setStatus(`Refund submitted: ${shortTx(txHash)}.`);
+  } catch (error) {
+    setStatus(getWalletErrorMessage(error, "Refund failed."));
+  } finally {
+    state.busy = false;
+    refreshPaymentControls();
+    refreshMatchActions();
   }
 }
 
@@ -467,6 +673,7 @@ async function reservePaidMatch() {
   return api("/api/matches/reserve", {
     method: "POST",
     body: {
+      ...getIdentityPayload(),
       wallet,
       difficulty: state.difficulty,
       token: state.selectedToken
@@ -476,7 +683,6 @@ async function reservePaidMatch() {
 
 async function joinArena({ demo, txHash, reservation = null }) {
   clearMatchLoops();
-  state.currentIndex = 0;
   state.localScore = 0;
   elements.score.textContent = "0";
   setQuestion("Ready?");
@@ -486,6 +692,7 @@ async function joinArena({ demo, txHash, reservation = null }) {
   const response = await api("/api/matches/join", {
     method: "POST",
     body: {
+      ...getIdentityPayload(),
       wallet,
       matchId: reservation?.matchId,
       playerId: reservation?.playerId,
@@ -508,7 +715,6 @@ async function submitCurrentAnswer() {
   const answer = elements.answerInput.value.trim();
   if (!answer) return;
 
-  const ms = Date.now() - state.questionStartedAt;
   elements.answerInput.value = "";
   elements.submitAnswer.disabled = true;
 
@@ -516,9 +722,7 @@ async function submitCurrentAnswer() {
     method: "POST",
     body: {
       playerId: state.playerId,
-      index: state.currentIndex,
-      answer: Number(answer),
-      ms
+      answer: Number(answer)
     }
   });
 
@@ -527,10 +731,11 @@ async function submitCurrentAnswer() {
 
 function applyMatch(match) {
   const previousStatus = state.match?.status;
-  const previousIndex = state.currentIndex;
+  const previousQuestionIndex = state.match?.currentQuestion?.index;
 
   state.match = match;
   state.playerId = match.playerId || state.playerId;
+  refreshMatchActions();
 
   const me = getMe();
   const rival = getRival();
@@ -551,7 +756,7 @@ function applyMatch(match) {
   }
 
   if (match.status === "waiting") {
-    setStatus("Waiting for a rival...");
+    setStatus("Searching opponent...");
     setQuestion("Matchmaking");
     toggleAnswer(false);
   }
@@ -564,13 +769,20 @@ function applyMatch(match) {
   }
 
   if (match.status === "active") {
-    const nextIndex = me ? me.answered : state.currentIndex;
+    if (me?.finishedAt && !match.currentQuestion) {
+      setQuestion("Done");
+      setStatus("Waiting for rival result...");
+      toggleAnswer(false);
+      if (!state.timerId) startTimer();
+      return;
+    }
+
+    const nextIndex = match.currentQuestion?.index ?? me?.answered ?? 0;
     const shouldRenderQuestion =
       previousStatus !== "active" ||
-      nextIndex !== previousIndex ||
+      nextIndex !== previousQuestionIndex ||
       elements.question.textContent === "Matchmaking" ||
       elements.question.textContent === "Ready?";
-    state.currentIndex = nextIndex;
     if (shouldRenderQuestion) {
       renderQuestion();
     }
@@ -587,6 +799,14 @@ function applyMatch(match) {
     clearMatchLoops();
     loadLeaderboard();
     loadStats();
+    loadProfile();
+  }
+
+  if (match.status === "refunded") {
+    setStatus(`Refund marked${match.refundTxHash ? `: ${shortTx(match.refundTxHash)}` : "."}`);
+    setQuestion("Refunded");
+    toggleAnswer(false);
+    clearMatchLoops();
   }
 }
 
@@ -594,17 +814,15 @@ function renderQuestion() {
   const match = state.match;
   if (!match || match.status !== "active") return;
 
-  if (state.currentIndex >= match.questions.length) {
+  if (!match.currentQuestion) {
     setQuestion("Done");
-    setStatus("Waiting for result...");
+    setStatus("Waiting for rival result...");
     toggleAnswer(false);
-    finishMatch();
     return;
   }
 
-  const question = match.questions[state.currentIndex];
+  const question = match.currentQuestion;
   setQuestion(question.expression.replace("*", "x"));
-  state.questionStartedAt = Date.now();
   elements.submitAnswer.disabled = false;
   elements.answerInput.disabled = false;
   elements.answerInput.focus({ preventScroll: true });
@@ -660,7 +878,7 @@ async function finishMatch() {
 function startPolling() {
   clearInterval(state.pollId);
   state.pollId = window.setInterval(async () => {
-    if (!state.match || state.match.status === "finished") return;
+    if (!state.match || ["finished", "refunded"].includes(state.match.status)) return;
     const response = await api(`/api/matches/${state.match.matchId}?playerId=${state.playerId}`);
     applyMatch(response);
   }, 1000);
@@ -674,11 +892,12 @@ function startTimer() {
 
 function updateTimer() {
   const match = state.match;
-  if (!match?.startedAt) {
+  const me = getMe();
+  if (!match?.startedAt || !me?.runStartedAt) {
     elements.timer.textContent = "--";
     return;
   }
-  const elapsed = Date.now() - match.startedAt;
+  const elapsed = Date.now() - me.runStartedAt;
   const left = Math.max(0, Math.ceil(match.durationSec - elapsed / 1000));
   elements.timer.textContent = `${left}s`;
   if (left <= 0) {
@@ -687,12 +906,16 @@ function updateTimer() {
 }
 
 async function loadLeaderboard() {
-  const response = await api("/api/leaderboard");
+  const params = new URLSearchParams({
+    sort: state.leaderboardSort,
+    search: elements.leaderboardSearch.value.trim()
+  });
+  const response = await api(`/api/leaderboard?${params}`);
   elements.leaderboard.innerHTML = "";
 
   if (!response.leaderboard.length) {
     const empty = document.createElement("li");
-    empty.innerHTML = `<span class="rank">-</span><span class="name">No ranked matches yet</span><span class="points">0</span>`;
+    empty.innerHTML = `<span class="rank">-</span><span class="name">No players found</span><span class="points">0</span>`;
     elements.leaderboard.append(empty);
     return;
   }
@@ -705,6 +928,37 @@ async function loadLeaderboard() {
       <span class="points">${row.score}</span>
     `;
     elements.leaderboard.append(item);
+  });
+}
+
+async function loadChat() {
+  const response = await api("/api/chat");
+  renderChat(response.messages || [], response.lastMessage || null);
+}
+
+async function sendChatMessage() {
+  const message = elements.chatInput.value.trim();
+  if (!message) return;
+  const response = await api("/api/chat", {
+    method: "POST",
+    body: {
+      ...getIdentityPayload(),
+      message
+    }
+  });
+  elements.chatInput.value = "";
+  renderChat(response.messages || [], response.lastMessage || response.message || null);
+}
+
+function renderChat(messages, lastMessage) {
+  elements.lastChat.textContent = lastMessage
+    ? `${lastMessage.display}: ${lastMessage.text}`
+    : "No messages yet.";
+  elements.chatList.innerHTML = "";
+  messages.slice(0, 10).forEach((message) => {
+    const item = document.createElement("li");
+    item.innerHTML = `<strong>${escapeHtml(message.display)}</strong><span>${escapeHtml(message.text)}</span>`;
+    elements.chatList.append(item);
   });
 }
 
@@ -759,6 +1013,101 @@ function refreshPaymentControls() {
   } else {
     elements.paymentStatus.textContent = `Ready with ${shortAddress(state.account)}. Winner payout ${getWinnerPayoutLabel(state.selectedToken)} ${state.selectedToken}.`;
   }
+}
+
+function refreshMatchActions() {
+  const match = state.match;
+  const canCancel =
+    match?.status === "waiting" &&
+    match.payment?.mode === "escrow" &&
+    Boolean(match.payment?.cancelAvailableAt);
+  elements.cancelMatch.hidden = !canCancel;
+  if (!canCancel) return;
+
+  const availableAt = Number(match.payment.cancelAvailableAt);
+  elements.cancelMatch.disabled = state.busy || Date.now() < availableAt;
+  elements.cancelMatch.textContent =
+    Date.now() >= availableAt ? "Cancel / Refund" : "Refund unlocks later";
+}
+
+function renderDevMode() {
+  elements.devPanel.hidden = !state.devMode;
+  updateDevButtons();
+}
+
+function updateDevButtons() {
+  document.querySelectorAll("[data-dev-player]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.devPlayer === state.devPlayerId);
+  });
+}
+
+function renderXp(events = []) {
+  const xp = state.xp || { total: 0, level: 1 };
+  elements.xpTotal.textContent = `${xp.total || 0} XP`;
+  elements.xpLevel.textContent = `Level ${xp.level || 1}`;
+  elements.xpHistory.innerHTML = "";
+
+  if (!events.length) {
+    const item = document.createElement("li");
+    item.innerHTML = `<span>No XP yet</span><strong>0</strong>`;
+    elements.xpHistory.append(item);
+    return;
+  }
+
+  events.slice(0, 6).forEach((event) => {
+    const item = document.createElement("li");
+    item.innerHTML = `<span>${escapeHtml(formatXpType(event.type))}</span><strong>+${event.amount}</strong>`;
+    elements.xpHistory.append(item);
+  });
+}
+
+function renderQuests() {
+  elements.questsList.innerHTML = "";
+  if (!state.tasks?.length) {
+    elements.questsList.textContent = "No quests yet.";
+    return;
+  }
+
+  state.tasks.forEach((task) => {
+    const card = document.createElement("article");
+    card.className = "quest-card";
+    card.dataset.taskId = task.id;
+    const latestStatus = task.latestClaim ? `Status: ${task.latestClaim.status}` : "Manual review";
+    const isShare = task.type === "share_result";
+    card.innerHTML = `
+      <h3>${escapeHtml(task.title)}</h3>
+      <p>${escapeHtml(task.description)}</p>
+      <div class="quest-meta">+${task.xpReward} XP - ${task.repeatable ? "repeatable" : "one time"} - ${latestStatus}</div>
+      <div class="quest-actions">
+        <input type="url" placeholder="Cast URL / proof URL" data-proof-input>
+        ${isShare ? '<button type="button" data-share-result>Share result</button>' : ""}
+        <button type="button" data-claim-task>Claim</button>
+      </div>
+      <div class="claim-status" data-claim-status></div>
+    `;
+    elements.questsList.append(card);
+  });
+}
+
+async function claimQuest(taskId, proofUrl) {
+  const response = await api(`/api/tasks/${taskId}/claim`, {
+    method: "POST",
+    body: {
+      ...getIdentityPayload(),
+      proofUrl
+    }
+  });
+  applyProfile(response);
+}
+
+async function resetDevState() {
+  if (!state.devMode) return;
+  await api("/api/dev/reset", { method: "POST", body: {} });
+  localStorage.removeItem("math-clash:last-wallet");
+  state.match = null;
+  state.playerId = null;
+  await restoreSession();
+  setStatus("Dev state reset.");
 }
 
 function toggleAnswer(enabled) {
@@ -868,6 +1217,20 @@ function normalizeHexQuantity(value) {
   if (typeof value === "bigint") return `0x${value.toString(16)}`;
   if (typeof value === "string") return value.toLowerCase();
   return "";
+}
+
+function formatXpType(type) {
+  return String(type || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function debounce(fn, ms) {
+  let id = null;
+  return (...args) => {
+    clearTimeout(id);
+    id = setTimeout(() => fn(...args), ms);
+  };
 }
 
 function escapeHtml(value) {

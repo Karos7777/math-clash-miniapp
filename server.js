@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { createStorage, normalizeState } = require("./storage");
 
 try {
   require("dotenv").config();
@@ -14,10 +15,11 @@ const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
-const STATE_FILE = path.join(DATA_DIR, "state.json");
+const STATE_FILE = process.env.MATH_CLASH_STATE_FILE || path.join(DATA_DIR, "state.json");
 
 const APP_NAME = process.env.APP_NAME || "Math Clash";
 const APP_URL = normalizeAppUrl(process.env.APP_URL || "https://your-domain.example");
+const DEV_MODE = process.env.DEV_MODE === "true" || process.env.NODE_ENV !== "production";
 const FARCASTER_HOSTED_MANIFEST_ID = process.env.FARCASTER_HOSTED_MANIFEST_ID || "";
 const FARCASTER_ACCOUNT_ASSOCIATION_HEADER =
   process.env.FARCASTER_ACCOUNT_ASSOCIATION_HEADER || "";
@@ -52,6 +54,7 @@ const ENTRY_FEE = TOKENS.ETH.entryFee;
 const ENTRY_FEE_UNITS = TOKENS.ETH.entryUnits;
 const DEVELOPER_FEE_BPS = 400n;
 const BPS_DENOMINATOR = 10000n;
+const MATCHMAKING_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 const ESCROW_CONTRACT_ADDRESS = process.env.ESCROW_CONTRACT_ADDRESS || "";
 const ESCROW_RESOLVER_PRIVATE_KEY = process.env.ESCROW_RESOLVER_PRIVATE_KEY || "";
 const DEFAULT_BASE_RPC_URL =
@@ -101,6 +104,7 @@ const MIME_TYPES = {
   ".ico": "image/x-icon"
 };
 
+const storage = createStorage({ root: ROOT, dataDir: DATA_DIR, stateFile: STATE_FILE });
 let state = loadState();
 
 const server = http.createServer(async (req, res) => {
@@ -138,6 +142,8 @@ async function routeApi(req, res, url) {
       ok: true,
       baseChainId: BASE_CHAIN_ID,
       entryFee: ENTRY_FEE,
+      devMode: DEV_MODE,
+      storage: storage.info(),
       difficulties: Object.fromEntries(
         Object.entries(DIFFICULTIES).map(([key, value]) => [
           key,
@@ -152,11 +158,72 @@ async function routeApi(req, res, url) {
     return;
   }
 
+  if (req.method === "GET" && (url.pathname === "/api/me" || url.pathname === "/api/match/status")) {
+    const identity = resolveIdentity(Object.fromEntries(url.searchParams.entries()));
+    const player = identity ? ensurePlayerProfile(identity) : null;
+    const match = identity ? findLatestMatchForIdentity(identity) : null;
+    if (match) tickMatch(match);
+    saveState();
+    sendJson(res, 200, buildMeResponse(identity, player, match));
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/leaderboard") {
+    const sort = url.searchParams.get("sort") === "worst" ? "worst" : "top";
+    const search = url.searchParams.get("search") || "";
     sendJson(res, 200, {
-      leaderboard: buildLeaderboard(),
+      leaderboard: buildLeaderboard({ sort, search }),
+      sort,
+      search,
       updatedAt: new Date().toISOString()
     });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/chat") {
+    sendJson(res, 200, {
+      messages: buildChatMessages(),
+      lastMessage: buildChatMessages(1)[0] || null
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/chat") {
+    const body = await readJson(req);
+    const identity = resolveIdentity(body);
+    const message = addChatMessage(identity, body);
+    saveState();
+    sendJson(res, 200, {
+      message,
+      messages: buildChatMessages(),
+      lastMessage: message
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/tasks") {
+    const identity = resolveIdentity(Object.fromEntries(url.searchParams.entries()));
+    const player = identity ? ensurePlayerProfile(identity) : null;
+    sendJson(res, 200, {
+      tasks: buildTaskViews(player?.id),
+      xpEvents: player ? buildXpHistory(player.id) : [],
+      player,
+      devMode: DEV_MODE
+    });
+    return;
+  }
+
+  const taskClaim = url.pathname.match(/^\/api\/tasks\/([^/]+)\/claim$/);
+  if (req.method === "POST" && taskClaim) {
+    const body = await readJson(req);
+    const identity = resolveIdentity(body);
+    if (!identity) {
+      throwHttp(400, "A Farcaster fid, wallet, or dev player id is required");
+    }
+
+    const response = claimTask(taskClaim[1], identity, body);
+    saveState();
+    sendJson(res, 200, response);
     return;
   }
 
@@ -206,7 +273,7 @@ async function routeApi(req, res, url) {
     }
 
     player.finishedAt = Date.now();
-    tickMatch(match, true);
+    tickMatch(match);
     saveState();
     sendJson(res, 200, viewMatch(match, body.playerId));
     return;
@@ -231,6 +298,16 @@ async function routeApi(req, res, url) {
     return;
   }
 
+  const matchRefund = url.pathname.match(/^\/api\/matches\/([^/]+)\/refund$/);
+  if (req.method === "POST" && matchRefund) {
+    const match = getMatchOrThrow(matchRefund[1]);
+    const body = await readJson(req);
+    const response = markMatchRefunded(match, body);
+    saveState();
+    sendJson(res, 200, response);
+    return;
+  }
+
   const matchView = url.pathname.match(/^\/api\/matches\/([^/]+)$/);
   if (req.method === "GET" && matchView) {
     const match = getMatchOrThrow(matchView[1]);
@@ -238,6 +315,17 @@ async function routeApi(req, res, url) {
     tickMatch(match);
     saveState();
     sendJson(res, 200, viewMatch(match, playerId));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/dev/reset") {
+    if (!DEV_MODE) {
+      throwHttp(403, "Dev reset is disabled in production");
+    }
+
+    state = normalizeState({ matches: {}, stats: {}, players: {}, xpEvents: {}, taskClaims: {} });
+    saveState();
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -472,21 +560,358 @@ function ethersAddressLike(value) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(value || ""));
 }
 
+function buildMeResponse(identity, player, match) {
+  return {
+    devMode: DEV_MODE,
+    identity: identity
+      ? {
+          source: identity.source,
+          key: identity.key,
+          fid: identity.fid,
+          walletAddress: identity.walletAddress,
+          devPlayerId: identity.devPlayerId
+        }
+      : null,
+    player,
+    xp: player ? buildXpSummary(player.id) : null,
+    xpEvents: player ? buildXpHistory(player.id) : [],
+    tasks: buildTaskViews(player?.id),
+    matchStatus: match ? getPersistentMatchStatus(match) : "none",
+    match: match ? viewMatch(match, findPlayerIdInMatch(match, identity)) : null
+  };
+}
+
+function resolveIdentity(input = {}) {
+  const fid = sanitizeFid(input.fid || input.farcasterFid);
+  const walletAddress = sanitizeWalletAddress(input.walletAddress || input.wallet);
+  const devPlayerId = DEV_MODE ? sanitizeDevPlayerId(input.devPlayerId) : "";
+  const username = sanitizeName(input.username || input.displayName || "");
+
+  if (fid) {
+    return {
+      source: "fid",
+      key: `fid:${fid}`,
+      fid,
+      walletAddress,
+      username,
+      devPlayerId: ""
+    };
+  }
+
+  if (walletAddress) {
+    return {
+      source: "wallet",
+      key: `wallet:${walletAddress.toLowerCase()}`,
+      fid: null,
+      walletAddress,
+      username,
+      devPlayerId: ""
+    };
+  }
+
+  if (devPlayerId) {
+    return {
+      source: "dev",
+      key: `dev:${devPlayerId}`,
+      fid: null,
+      walletAddress: "",
+      username: devPlayerId,
+      devPlayerId
+    };
+  }
+
+  return null;
+}
+
+function ensurePlayerProfile(identity) {
+  const now = new Date().toISOString();
+  const existing = state.players[identity.key];
+  const player = existing || {
+    id: identity.key,
+    fid: identity.fid || null,
+    walletAddress: identity.walletAddress || "",
+    username: identity.username || null,
+    xp: 0,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  player.fid = identity.fid || player.fid || null;
+  player.walletAddress = identity.walletAddress || player.walletAddress || "";
+  player.username = identity.username || player.username || null;
+  player.updatedAt = now;
+  state.players[player.id] = player;
+  return player;
+}
+
+function findLatestMatchForIdentity(identity) {
+  const matches = Object.values(state.matches).filter((match) =>
+    Object.values(match.players || {}).some((player) => playerMatchesIdentity(player, identity))
+  );
+
+  matches.forEach(syncMatchRecord);
+  return matches.sort((a, b) => getMatchSortTime(b) - getMatchSortTime(a))[0] || null;
+}
+
+function playerMatchesIdentity(player, identity) {
+  if (!player || !identity) return false;
+  if (player.identityKey === identity.key || player.profileId === identity.key) return true;
+  if (identity.fid && Number(player.fid) === Number(identity.fid)) return true;
+  if (identity.walletAddress && player.walletKey === walletKey(identity.walletAddress)) return true;
+  if (identity.devPlayerId && player.devPlayerId === identity.devPlayerId) return true;
+  return false;
+}
+
+function findPlayerIdInMatch(match, identity) {
+  const entry = Object.entries(match.players || {}).find(([, player]) =>
+    playerMatchesIdentity(player, identity)
+  );
+  return entry?.[0] || null;
+}
+
+function getMatchSortTime(match) {
+  return Number(match.updatedAt || match.finishedAt || match.startedAt || match.createdAt || 0);
+}
+
+function getPersistentMatchStatus(match) {
+  if (!match) return "none";
+  if (match.lifecycleStatus === "refunded" || match.status === "refunded") return "refunded";
+  if (match.status === "finished") {
+    return match.payment?.settlement?.txHash ? "settled" : "finished";
+  }
+  if (match.status === "active") return "playing";
+  if (match.status === "funding") return "matched";
+  if (match.status === "waiting") return "searching";
+  return match.status || "none";
+}
+
+function syncMatchRecord(match) {
+  if (!match) return match;
+  const orderedPlayers = (match.order || []).map((id) => match.players[id]).filter(Boolean);
+  const player1 = orderedPlayers[0] || null;
+  const player2 = orderedPlayers[1] || null;
+  const winner = match.result?.winnerId ? match.players[match.result.winnerId] : null;
+
+  match.lifecycleStatus = getPersistentMatchStatus(match);
+  match.player1Id = player1?.profileId || player1?.identityKey || player1?.walletKey || null;
+  match.player2Id = player2?.profileId || player2?.identityKey || player2?.walletKey || null;
+  match.player1Wallet = player1 && !player1.isBot ? player1.wallet : null;
+  match.player2Wallet = player2 && !player2.isBot ? player2.wallet : null;
+  match.escrowGameId = match.payment?.escrowId || null;
+  match.stakeAmount = match.payment?.entryFee || null;
+  match.chainId = BASE_CHAIN_ID;
+  match.contractAddress = ESCROW_CONTRACT_ADDRESS || null;
+  match.winnerPlayerId = winner?.profileId || winner?.identityKey || null;
+  match.settlementTx = match.payment?.settlement?.txHash || null;
+  match.updatedAt = match.updatedAt || match.createdAt || Date.now();
+  return match;
+}
+
+function buildXpSummary(playerId) {
+  const player = state.players[playerId];
+  const xp = Number(player?.xp || 0);
+  return {
+    total: xp,
+    level: xpToLevel(xp),
+    nextLevelAt: xpToNextLevel(xp),
+    note: "XP may be used for future rewards if the project continues."
+  };
+}
+
+function buildXpHistory(playerId) {
+  return Object.values(state.xpEvents)
+    .filter((event) => event.playerId === playerId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 20);
+}
+
+function buildTaskViews(playerId) {
+  return Object.values(state.socialTasks)
+    .filter((task) => task.active)
+    .map((task) => {
+      const claims = Object.values(state.taskClaims)
+        .filter((claim) => claim.playerId === playerId && claim.taskId === task.id)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return {
+        ...task,
+        latestClaim: claims[0] || null
+      };
+    });
+}
+
+function claimTask(taskId, identity, body) {
+  const task = state.socialTasks[taskId];
+  if (!task || !task.active) {
+    throwHttp(404, "Quest not found");
+  }
+
+  const player = ensurePlayerProfile(identity);
+  if (!task.repeatable) {
+    const existing = Object.values(state.taskClaims).find(
+      (claim) => claim.playerId === player.id && claim.taskId === task.id
+    );
+    if (existing) {
+      return {
+        claim: existing,
+        player,
+        devMode: DEV_MODE,
+        xp: buildXpSummary(player.id),
+        xpEvents: buildXpHistory(player.id),
+        tasks: buildTaskViews(player.id)
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const claim = {
+    id: createId("claim"),
+    playerId: player.id,
+    taskId: task.id,
+    status: "pending",
+    proofUrl: sanitizeUrl(body.proofUrl || body.castUrl || ""),
+    castHash: sanitizeText(body.castHash || "", 120),
+    createdAt: now,
+    updatedAt: now
+  };
+
+  state.taskClaims[claim.id] = claim;
+  return {
+    claim,
+    player,
+    devMode: DEV_MODE,
+    xp: buildXpSummary(player.id),
+    xpEvents: buildXpHistory(player.id),
+    tasks: buildTaskViews(player.id)
+  };
+}
+
+function addChatMessage(identity, body) {
+  const text = sanitizeChatMessage(body.message || body.text || "");
+  if (!text) {
+    throwHttp(400, "Message is required");
+  }
+
+  const player = identity ? ensurePlayerProfile(identity) : null;
+  const message = {
+    id: createId("chat"),
+    playerId: player?.id || null,
+    display: player?.username || shortWallet(identity?.walletAddress || "") || "Guest",
+    text,
+    createdAt: new Date().toISOString()
+  };
+  state.chatMessages[message.id] = message;
+
+  const all = Object.values(state.chatMessages).sort((a, b) =>
+    String(b.createdAt).localeCompare(String(a.createdAt))
+  );
+  all.slice(100).forEach((oldMessage) => {
+    delete state.chatMessages[oldMessage.id];
+  });
+
+  return message;
+}
+
+function buildChatMessages(limit = 30) {
+  return Object.values(state.chatMessages || {})
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, limit);
+}
+
+function awardXp(playerId, type, amount, metadata = {}, options = {}) {
+  if (!playerId || !state.players[playerId]) return null;
+  const dedupeKey = options.dedupeKey || `${type}:${metadata.matchId || ""}`;
+  const alreadyAwarded = Object.values(state.xpEvents).some(
+    (event) => event.playerId === playerId && event.type === type && event.dedupeKey === dedupeKey
+  );
+  if (alreadyAwarded) return null;
+
+  const now = new Date().toISOString();
+  const event = {
+    id: createId("xp"),
+    playerId,
+    type,
+    amount,
+    metadata,
+    dedupeKey,
+    createdAt: now
+  };
+  state.xpEvents[event.id] = event;
+  state.players[playerId].xp = Number(state.players[playerId].xp || 0) + amount;
+  state.players[playerId].updatedAt = now;
+  return event;
+}
+
+function awardMatchEntryXp(player) {
+  if (!player?.profileId || player.isBot || player.demo) return;
+  awardXp(player.profileId, "play_first_match", 10, {}, { dedupeKey: "play_first_match" });
+  awardXp(
+    player.profileId,
+    "daily_first_match",
+    10,
+    { day: currentUtcDay() },
+    { dedupeKey: currentUtcDay() }
+  );
+}
+
+function awardFinishedMatchXp(match, player, won) {
+  if (!player?.profileId || player.isBot || player.demo) return;
+  awardXp(player.profileId, "finish_match", 10, { matchId: match.id }, { dedupeKey: match.id });
+  if (won) {
+    awardXp(player.profileId, "win_match", 25, { matchId: match.id }, { dedupeKey: match.id });
+  }
+}
+
+function xpToLevel(xp) {
+  return Math.max(1, Math.floor(Math.sqrt(Math.max(0, xp) / 100)) + 1);
+}
+
+function xpToNextLevel(xp) {
+  const nextLevel = xpToLevel(xp) + 1;
+  return (nextLevel - 1) * (nextLevel - 1) * 100;
+}
+
+function currentUtcDay() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function markMatchRefunded(match, body) {
+  const identity = resolveIdentity(body);
+  const playerId = String(body.playerId || findPlayerIdInMatch(match, identity) || "");
+  const player = match.players[playerId];
+  if (!player) {
+    throwHttp(404, "Player not found");
+  }
+
+  if (match.status !== "waiting" && match.status !== "funding") {
+    throwHttp(400, "Only unmatched matches can be marked refunded");
+  }
+
+  match.status = "refunded";
+  match.lifecycleStatus = "refunded";
+  match.refundTxHash = sanitizeTxHash(body.txHash);
+  match.updatedAt = Date.now();
+  return viewMatch(match, playerId);
+}
+
 function joinMatch(body) {
   const difficulty = DIFFICULTIES[body.difficulty] ? body.difficulty : "medium";
   const token = normalizeToken(body.token);
   const wallet = sanitizeWallet(body.wallet);
   const txHash = sanitizeTxHash(body.txHash);
   const demo = Boolean(body.demo);
+  const identity = resolveIdentity({ ...body, wallet });
+  const profile = identity ? ensurePlayerProfile(identity) : null;
 
   if (!demo) {
-    return confirmPaidMatch({ ...body, difficulty, token, wallet, txHash });
+    return confirmPaidMatch({ ...body, difficulty, token, txHash, identity, profile });
   }
 
   cleanupWaitingMatches();
 
   const player = createPlayer({
     wallet,
+    identity,
+    profile,
     demo,
     token,
     txHash,
@@ -540,6 +965,8 @@ function reservePaidMatch(body) {
   const difficulty = DIFFICULTIES[body.difficulty] ? body.difficulty : "medium";
   const token = normalizeToken(body.token);
   const wallet = sanitizeWallet(body.wallet);
+  const identity = resolveIdentity({ ...body, wallet });
+  const profile = identity ? ensurePlayerProfile(identity) : null;
 
   if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
     throwHttp(400, "A connected wallet address is required for paid escrow matches");
@@ -555,11 +982,15 @@ function reservePaidMatch(body) {
       match.payment.token === token &&
       paidHumanPlayers(match).length === 1 &&
       match.order.length === 1 &&
-      !Object.values(match.players).some((existing) => existing.walletKey === walletKey(wallet))
+      !Object.values(match.players).some(
+        (existing) => existing.walletKey === walletKey(wallet) || playerMatchesIdentity(existing, identity)
+      )
   );
 
   const player = createPlayer({
     wallet,
+    identity,
+    profile,
     demo: false,
     token,
     paid: false,
@@ -603,6 +1034,8 @@ function confirmPaidMatch(body) {
   const playerId = String(body.playerId || "");
   const match = getMatchOrThrow(matchId);
   const player = match.players[playerId];
+  const identity = body.identity || resolveIdentity(body);
+  const profile = body.profile || (identity ? ensurePlayerProfile(identity) : null);
 
   if (!player) {
     throwHttp(404, "Player not found");
@@ -626,8 +1059,13 @@ function confirmPaidMatch(body) {
 
   player.paid = true;
   player.txHash = body.txHash;
+  player.profileId = player.profileId || profile?.id || identity?.key || player.profileId;
+  player.identityKey = player.identityKey || identity?.key || player.identityKey;
+  player.fid = player.fid || identity?.fid || null;
+  player.devPlayerId = player.devPlayerId || identity?.devPlayerId || "";
   match.payment.txHashes[player.id] = body.txHash;
   match.updatedAt = Date.now();
+  awardMatchEntryXp(player);
 
   if (paidHumanPlayers(match).length >= 2) {
     startMatch(match);
@@ -643,6 +1081,16 @@ function tickMatch(match, forceFinish = false) {
 
   if (
     match.status === "waiting" &&
+    match.payment?.mode === "escrow" &&
+    Date.now() - Number(match.createdAt || 0) > MATCHMAKING_TIMEOUT_MS
+  ) {
+    match.lifecycleStatus = "refund_available";
+    match.updatedAt = Date.now();
+    changed = true;
+  }
+
+  if (
+    match.status === "waiting" &&
     match.payment?.mode === "demo" &&
     Date.now() - match.createdAt > 4800
   ) {
@@ -654,14 +1102,24 @@ function tickMatch(match, forceFinish = false) {
   if (match.status === "active") {
     changed = advanceBot(match) || changed;
 
-    const elapsed = Date.now() - match.startedAt;
-    const timeExpired = elapsed >= match.durationSec * 1000;
+    Object.values(match.players).forEach((player) => {
+      if (
+        !player.finishedAt &&
+        player.runStartedAt &&
+        Date.now() - player.runStartedAt >= match.durationSec * 1000
+      ) {
+        player.finishedAt = Number(player.runStartedAt) + match.durationSec * 1000;
+        changed = true;
+      }
+    });
+
+    const deadlineExpired = Date.now() >= Number(match.deadlineAt || match.startedAt + MATCHMAKING_TIMEOUT_MS);
     const everyoneFinished = Object.values(match.players).every(
       (player) => player.finishedAt || player.answered >= match.questions.length
     );
 
-    if (forceFinish || timeExpired || everyoneFinished) {
-      finishMatch(match, timeExpired ? "time" : "complete");
+    if (forceFinish || deadlineExpired || everyoneFinished) {
+      finishMatch(match, deadlineExpired ? "deadline" : "complete");
       changed = true;
     }
   }
@@ -672,7 +1130,9 @@ function tickMatch(match, forceFinish = false) {
 function startMatch(match) {
   match.status = "active";
   match.startedAt = Date.now();
+  match.deadlineAt = match.startedAt + MATCHMAKING_TIMEOUT_MS;
   match.updatedAt = Date.now();
+  syncMatchRecord(match);
 }
 
 function attachBot(match) {
@@ -706,17 +1166,32 @@ function submitAnswer(match, body) {
     throwHttp(404, "Player not found");
   }
 
-  const index = Number(body.index);
-  const ms = clamp(Number(body.ms) || 0, 0, 30000);
-  applyAnswer(match, player, index, body.answer, ms);
+  startPlayerRun(match, player);
+  const accepted = applyAnswer(match, player, body.answer);
+  tickMatch(match);
 
   return {
-    accepted: true,
+    accepted,
     match: viewMatch(match, body.playerId)
   };
 }
 
-function applyAnswer(match, player, index, rawAnswer, ms) {
+function startPlayerRun(match, player) {
+  if (match.status !== "active" || player.finishedAt) return;
+  if (!player.runStartedAt) {
+    player.runStartedAt = Date.now();
+  }
+  if (!player.currentQuestionStartedAt) {
+    player.currentQuestionStartedAt = player.runStartedAt;
+  }
+}
+
+function applyAnswer(match, player, rawAnswer, botMs = null) {
+  if (match.status !== "active" || player.finishedAt) {
+    return false;
+  }
+
+  const index = player.answered;
   if (!Number.isInteger(index) || index < 0 || index >= match.questions.length) {
     return false;
   }
@@ -729,16 +1204,20 @@ function applyAnswer(match, player, index, rawAnswer, ms) {
   const answer = Number(rawAnswer);
   const correct = Number.isFinite(answer) && answer === question.answer;
   const config = DIFFICULTIES[match.difficulty];
+  const now = Date.now();
+  const startedAt = Number(player.currentQuestionStartedAt || match.startedAt || now);
+  const ms = botMs === null ? clamp(now - startedAt, 0, match.durationSec * 1000) : botMs;
 
   player.answers[String(index)] = {
     answer: Number.isFinite(answer) ? answer : null,
     correct,
     ms,
-    at: Date.now()
+    at: now
   };
   player.answered += 1;
   player.totalMs += ms;
-  player.lastAnswerAt = Date.now();
+  player.lastAnswerAt = now;
+  player.currentQuestionStartedAt = now;
 
   if (correct) {
     player.correct += 1;
@@ -755,7 +1234,7 @@ function applyAnswer(match, player, index, rawAnswer, ms) {
   }
 
   if (player.answered >= match.questions.length) {
-    player.finishedAt = Date.now();
+    player.finishedAt = now;
   }
 
   return true;
@@ -766,8 +1245,9 @@ function advanceBot(match) {
   const bot = match.players[match.botId];
   if (!bot || bot.finishedAt) return false;
 
+  startPlayerRun(match, bot);
   const config = DIFFICULTIES[match.difficulty];
-  const elapsed = Date.now() - match.startedAt;
+  const elapsed = Date.now() - bot.runStartedAt;
   const targetAnswered = Math.min(
     match.questions.length,
     Math.floor(elapsed / config.botPaceMs)
@@ -780,7 +1260,7 @@ function advanceBot(match) {
     const wobble = crypto.randomInt(1, 5) * (Math.random() > 0.5 ? 1 : -1);
     const answer = correct ? question.answer : question.answer + wobble;
     const ms = config.botPaceMs + crypto.randomInt(-450, 650);
-    applyAnswer(match, bot, index, answer, ms);
+    applyAnswer(match, bot, answer, ms);
     changed = true;
   }
 
@@ -847,27 +1327,48 @@ function recordStats(match) {
     stats.tokens[player.token] = (stats.tokens[player.token] || 0) + 1;
 
     state.stats[key] = stats;
+    awardFinishedMatchXp(match, player, won);
   });
 }
 
 function viewMatch(match, playerId) {
   tickMatch(match);
+  const viewer = match.players[playerId] || null;
+  if (viewer) {
+    startPlayerRun(match, viewer);
+    tickMatch(match);
+  }
+  syncMatchRecord(match);
   return {
     matchId: match.id,
     playerId,
     difficulty: match.difficulty,
     status: match.status,
+    persistentStatus: match.lifecycleStatus,
     createdAt: match.createdAt,
     startedAt: match.startedAt,
     finishedAt: match.finishedAt,
+    deadlineAt: match.deadlineAt || null,
     durationSec: match.durationSec,
-    questions: match.questions.map(({ expression }, index) => ({
-      index,
-      expression
-    })),
+    questionCount: match.questions.length,
+    serverNow: Date.now(),
+    currentQuestion: getCurrentQuestionForPlayer(match, viewer),
     players: match.order.map((id) => publicPlayer(match.players[id])),
     payment: publicPayment(match),
-    result: match.result
+    result: match.result,
+    refundTxHash: match.refundTxHash || null
+  };
+}
+
+function getCurrentQuestionForPlayer(match, player) {
+  if (!player || match.status !== "active" || player.finishedAt) return null;
+  const index = player.answered;
+  const question = match.questions[index];
+  if (!question) return null;
+  return {
+    index,
+    expression: question.expression,
+    startedAt: player.currentQuestionStartedAt || match.startedAt
   };
 }
 
@@ -885,6 +1386,7 @@ function publicPlayer(player) {
     wrong: player.wrong,
     streak: player.streak,
     bestStreak: player.bestStreak,
+    runStartedAt: player.runStartedAt || null,
     finishedAt: player.finishedAt
   };
 }
@@ -909,6 +1411,10 @@ function publicPayment(match) {
     developerFeeBps: match.payment.developerFeeBps,
     developerFeeUnits: match.payment.developerFeeUnits,
     winnerPayoutUnits: match.payment.winnerPayoutUnits,
+    cancelAvailableAt:
+      match.status === "waiting" && paidHumanPlayers(match).length === 1
+        ? Number(match.createdAt || Date.now()) + MATCHMAKING_TIMEOUT_MS
+        : null,
     payout: match.payment.payout || null,
     settlement: match.payment.settlement || null
   };
@@ -916,10 +1422,16 @@ function publicPayment(match) {
 
 function createPlayer(options) {
   const wallet = options.wallet || `guest:${createId("guest")}`;
+  const identity = options.identity || null;
+  const profile = options.profile || null;
   return {
     id: options.id || createId("player"),
     wallet,
     walletKey: walletKey(wallet),
+    profileId: profile?.id || identity?.key || "",
+    identityKey: identity?.key || "",
+    fid: identity?.fid || null,
+    devPlayerId: identity?.devPlayerId || "",
     name: sanitizeName(options.name || shortWallet(wallet)),
     isBot: Boolean(options.isBot),
     demo: Boolean(options.demo),
@@ -934,6 +1446,8 @@ function createPlayer(options) {
     bestStreak: 0,
     totalMs: 0,
     answers: {},
+    runStartedAt: null,
+    currentQuestionStartedAt: null,
     finishedAt: null,
     lastAnswerAt: null
   };
@@ -1095,24 +1609,42 @@ async function settleEscrow(match) {
   }
 }
 
-function buildLeaderboard() {
-  return Object.values(state.stats)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (b.wins !== a.wins) return b.wins - a.wins;
-      return b.bestScore - a.bestScore;
-    })
-    .slice(0, 25)
-    .map((stats, index) => ({
+function buildLeaderboard(options = {}) {
+  const sort = options.sort === "worst" ? "worst" : "top";
+  const search = String(options.search || "").trim().toLowerCase();
+  const ranked = Object.values(state.stats).sort((a, b) => {
+    if (sort === "worst") {
+      if (a.wins !== b.wins) return a.wins - b.wins;
+      if (a.score !== b.score) return a.score - b.score;
+      return a.bestScore - b.bestScore;
+    }
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.wins !== a.wins) return b.wins - a.wins;
+    return b.bestScore - a.bestScore;
+  });
+
+  const rows = ranked.map((stats, index) => ({
       rank: index + 1,
       display: stats.display,
       wallet: stats.wallet,
       score: stats.score,
       wins: stats.wins,
+      losses: stats.losses,
       matches: stats.matches,
       accuracy: stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0,
       bestScore: stats.bestScore
-    }));
+  }));
+
+  if (search) {
+    const found = rows.filter(
+      (row) =>
+        row.display.toLowerCase().includes(search) ||
+        String(row.wallet || "").toLowerCase().includes(search)
+    );
+    return found.slice(0, 100);
+  }
+
+  return rows.slice(0, 100);
 }
 
 function createEmptyStats(wallet) {
@@ -1129,6 +1661,7 @@ function createEmptyStats(wallet) {
     correct: 0,
     answered: 0,
     tokens: {
+      ETH: 0,
       USDC: 0,
       USDT: 0
     },
@@ -1137,28 +1670,11 @@ function createEmptyStats(wallet) {
 }
 
 function loadState() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(STATE_FILE)) {
-    return { matches: {}, stats: {} };
-  }
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-    return {
-      matches: parsed.matches && typeof parsed.matches === "object" ? parsed.matches : {},
-      stats: parsed.stats && typeof parsed.stats === "object" ? parsed.stats : {}
-    };
-  } catch (error) {
-    console.warn("Could not read state file, starting fresh:", error.message);
-    return { matches: {}, stats: {} };
-  }
+  return normalizeState(storage.loadState());
 }
 
 function saveState() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const temp = `${STATE_FILE}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(state, null, 2));
-  fs.renameSync(temp, STATE_FILE);
+  storage.saveState(state);
 }
 
 async function readJson(req) {
@@ -1214,9 +1730,50 @@ function sanitizeWallet(wallet) {
   return `guest:${createId("local")}`;
 }
 
+function sanitizeWalletAddress(wallet) {
+  const value = String(wallet || "").trim();
+  return /^0x[a-fA-F0-9]{40}$/.test(value) ? value : "";
+}
+
+function sanitizeFid(fid) {
+  const value = Number(fid);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function sanitizeDevPlayerId(value) {
+  const text = String(value || "").trim();
+  return /^(player1|player2|player3)$/.test(text) ? text : "";
+}
+
 function sanitizeTxHash(txHash) {
   const value = String(txHash || "").trim();
   return /^0x[a-fA-F0-9]{64}$/.test(value) ? value : "";
+}
+
+function sanitizeUrl(value) {
+  const text = String(value || "").trim().slice(0, 240);
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeText(value, max = 80) {
+  return String(value || "")
+    .replace(/[^\w .:/?#@-]/g, "")
+    .trim()
+    .slice(0, max);
+}
+
+function sanitizeChatMessage(value) {
+  return String(value || "")
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
 }
 
 function sanitizeName(name) {
