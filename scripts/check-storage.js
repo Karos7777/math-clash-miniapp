@@ -32,10 +32,18 @@ function main() {
     createdAt: now,
     updatedAt: now
   };
+  state.chatMessages.chat_test = {
+    id: "chat_test",
+    playerId: "wallet:0xabc",
+    display: "0xabc",
+    text: "hi",
+    createdAt: now
+  };
   storage.saveState(state);
 
   const reloaded = normalizeState(storage.loadState());
   assert(reloaded.players["wallet:0xabc"].xp === 10, "player persists after reload");
+  assert(reloaded.chatMessages.chat_test.text === "hi", "chat message persists after reload");
   assert(reloaded.socialTasks.invite_friend.xpReward === 50, "social task data persists");
 
   fs.rmSync(dir, { recursive: true, force: true });

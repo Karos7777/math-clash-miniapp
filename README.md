@@ -124,6 +124,7 @@ Anti-cheat basics:
 - Correct answers are never sent to the frontend.
 - Answer timing is calculated on the server.
 - Winner selection is server-side only.
+- Questions are generated one at a time for the full timer, so a fast player does not hit a fixed question limit.
 
 The chat endpoint is persistent across refresh:
 
@@ -133,6 +134,7 @@ POST /api/chat
 ```
 
 It keeps the latest messages so players can coordinate, for example to say they are looking for a medium mode match.
+Dev reset keeps chat messages. On Render, use `DATABASE_URL`/Supabase before mainnet if chat and matches must survive service redeploys or restarts.
 
 XP is off-chain only for now. The app intentionally says:
 

@@ -668,25 +668,35 @@ input:disabled {
 }
 
 @media (max-width: 680px) {
+  body {
+    background: var(--bg);
+  }
+
   .app-shell {
-    width: min(100% - 12px, 1180px);
-    padding-top: 8px;
+    width: 100%;
+    padding: 8px 8px 18px;
   }
 
   .topbar {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 10px;
-    margin-bottom: 10px;
+    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 8px;
   }
 
   .brand-mark {
-    width: 42px;
-    height: 42px;
+    width: 38px;
+    height: 38px;
+  }
+
+  .brand {
+    min-width: 0;
+    gap: 8px;
   }
 
   .brand h1 {
-    font-size: 1.55rem;
+    font-size: 1.42rem;
   }
 
   .top-actions {
@@ -698,20 +708,68 @@ input:disabled {
   .wallet-pill,
   .miniapp-action {
     width: 100%;
+    min-height: 34px;
+    padding: 0 8px;
+    font-size: 0.9rem;
+    box-shadow: none;
+  }
+
+  .layout {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .side-panel {
+    order: -1;
+    gap: 8px;
+    padding: 10px;
+    box-shadow: none;
+  }
+
+  .control-block {
+    gap: 6px;
+  }
+
+  .segmented,
+  #tokenControls,
+  #difficultyControls.segmented.vertical {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  #modeControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .segment,
+  .category-pill {
+    min-height: 36px;
+    font-size: 0.84rem;
+  }
+
+  .primary-action,
+  .secondary-action {
+    min-height: 42px;
+  }
+
+  .payment-note {
+    min-height: auto;
+    font-size: 0.78rem;
   }
 
   .play-surface {
     min-height: auto;
-    padding: 10px;
+    padding: 8px;
+    box-shadow: none;
   }
 
   .arena-head > div,
   .stat-grid > div {
-    min-height: 62px;
+    min-height: 52px;
   }
 
   .stat-grid,
-  .side-panel,
   .category-grid,
   .quest-actions,
   .dev-controls,
@@ -722,23 +780,28 @@ input:disabled {
 
   .arena-head {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
+    gap: 5px;
   }
 
   .arena-head > div {
-    min-height: 58px;
-    padding: 8px;
+    min-height: 50px;
+    padding: 7px;
   }
 
   .arena-head strong {
-    font-size: 1rem;
+    font-size: 0.95rem;
+  }
+
+  .eyebrow {
+    margin-bottom: 3px;
+    font-size: 0.61rem;
   }
 
   .arena-visual {
     position: relative;
     inset: auto;
-    height: 104px;
-    margin-top: 10px;
+    height: 82px;
+    margin-top: 7px;
   }
 
   .arena-visual img {
@@ -746,21 +809,64 @@ input:disabled {
   }
 
   .match-panel {
-    margin-top: 10px;
-    padding: 10px;
+    margin-top: 8px;
+    padding: 9px;
+  }
+
+  .status-line {
+    min-height: auto;
+    margin-bottom: 8px;
+    font-size: 0.82rem;
   }
 
   .question {
-    min-height: 56px;
-    font-size: 1.9rem;
+    min-height: 48px;
+    margin-bottom: 10px;
+    font-size: 1.55rem;
   }
 
-  .answer-row,
+  .answer-row {
+    grid-template-columns: minmax(0, 1fr) 72px;
+    gap: 7px;
+  }
+
+  .answer-row input,
+  .answer-row button,
+  .ready-action {
+    min-height: 42px;
+    font-size: 0.95rem;
+  }
+
   .versus {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .fighter {
+    min-height: 58px;
+    padding: 9px;
+    border-left-width: 4px;
+  }
+
+  .fighter-score {
+    margin-top: 5px;
+    font-size: 0.82rem;
   }
 
   .vs-mark {
-    margin: 0 auto;
+    width: 40px;
+    height: 40px;
+    font-size: 0.9rem;
+  }
+
+  .stats-panel,
+  .leaderboard-panel,
+  .xp-panel,
+  .quests-panel,
+  .dev-panel,
+  .chat-panel {
+    padding: 10px;
+    box-shadow: none;
   }
 }

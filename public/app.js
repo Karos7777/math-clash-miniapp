@@ -88,6 +88,7 @@ const state = {
   localScore: 0,
   timerId: null,
   pollId: null,
+  chatPollId: null,
   busy: false
 };
 
@@ -153,6 +154,7 @@ async function boot() {
   await restoreSession();
   await loadLeaderboard();
   await loadChat();
+  startChatPolling();
 }
 
 function bindEvents() {
@@ -1033,6 +1035,13 @@ async function loadLeaderboard() {
 async function loadChat() {
   const response = await api("/api/chat");
   renderChat(response.messages || [], response.lastMessage || null);
+}
+
+function startChatPolling() {
+  clearInterval(state.chatPollId);
+  state.chatPollId = window.setInterval(() => {
+    loadChat().catch((error) => console.info("Chat refresh skipped:", error.message));
+  }, 10000);
 }
 
 async function sendChatMessage() {

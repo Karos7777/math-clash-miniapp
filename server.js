@@ -211,8 +211,9 @@ async function routeApi(req, res, url) {
     const player = identity ? ensurePlayerProfile(identity) : null;
     const match = identity ? findLatestMatchForIdentity(identity) : null;
     if (match) tickMatch(match);
+    const response = buildMeResponse(identity, player, match);
     saveState();
-    sendJson(res, 200, buildMeResponse(identity, player, match));
+    sendJson(res, 200, response);
     return;
   }
 
@@ -376,8 +377,9 @@ async function routeApi(req, res, url) {
     const match = getMatchOrThrow(matchView[1]);
     const playerId = url.searchParams.get("playerId");
     tickMatch(match);
+    const response = viewMatch(match, playerId);
     saveState();
-    sendJson(res, 200, viewMatch(match, playerId));
+    sendJson(res, 200, response);
     return;
   }
 
@@ -386,7 +388,15 @@ async function routeApi(req, res, url) {
       throwHttp(403, "Dev reset is disabled in production");
     }
 
-    state = normalizeState({ matches: {}, stats: {}, players: {}, xpEvents: {}, taskClaims: {} });
+    state = normalizeState({
+      matches: {},
+      stats: {},
+      chatMessages: state.chatMessages,
+      players: {},
+      xpEvents: {},
+      socialTasks: state.socialTasks,
+      taskClaims: {}
+    });
     saveState();
     sendJson(res, 200, { ok: true });
     return;
@@ -1234,9 +1244,7 @@ function tickMatch(match, forceFinish = false) {
     });
 
     const deadlineExpired = Date.now() >= Number(match.deadlineAt || match.startedAt + MATCHMAKING_TIMEOUT_MS);
-    const everyoneFinished = Object.values(match.players).every(
-      (player) => player.finishedAt || player.answered >= match.questions.length
-    );
+    const everyoneFinished = Object.values(match.players).every((player) => player.finishedAt);
 
     if (forceFinish || deadlineExpired || everyoneFinished) {
       finishMatch(match, deadlineExpired ? "deadline" : "complete");
@@ -1350,7 +1358,7 @@ function applyAnswer(match, player, rawAnswer, botMs = null) {
   }
 
   const index = player.answered;
-  if (!Number.isInteger(index) || index < 0 || index >= match.questions.length) {
+  if (!Number.isInteger(index) || index < 0) {
     return false;
   }
 
@@ -1358,7 +1366,7 @@ function applyAnswer(match, player, rawAnswer, botMs = null) {
     return false;
   }
 
-  const question = match.questions[index];
+  const question = ensureQuestion(match, index);
   const correct = isCorrectAnswer(rawAnswer, question.answer, match.mode);
   const config = DIFFICULTIES[match.difficulty];
   const now = Date.now();
@@ -1389,10 +1397,6 @@ function applyAnswer(match, player, rawAnswer, botMs = null) {
     player.score -= scoreDelta;
   }
 
-  if (player.answered >= match.questions.length) {
-    player.finishedAt = now;
-  }
-
   return true;
 }
 
@@ -1404,14 +1408,11 @@ function advanceBot(match) {
   startPlayerRun(match, bot);
   const config = DIFFICULTIES[match.difficulty];
   const elapsed = Date.now() - bot.runStartedAt;
-  const targetAnswered = Math.min(
-    match.questions.length,
-    Math.floor(elapsed / config.botPaceMs)
-  );
+  const targetAnswered = Math.floor(elapsed / config.botPaceMs);
 
   let changed = false;
   for (let index = bot.answered; index < targetAnswered; index += 1) {
-    const question = match.questions[index];
+    const question = ensureQuestion(match, index);
     const correct = Math.random() < config.botAccuracy;
     const wobble = crypto.randomInt(1, 5) * (Math.random() > 0.5 ? 1 : -1);
     const answer = correct ? question.answer : question.answer + wobble;
@@ -1505,7 +1506,7 @@ function viewMatch(match, playerId) {
     finishedAt: match.finishedAt,
     deadlineAt: match.deadlineAt || null,
     durationSec: match.durationSec,
-    questionCount: match.questions.length,
+    questionCount: null,
     serverNow: Date.now(),
     currentQuestion: getCurrentQuestionForPlayer(match, viewer),
     players: match.order.map((id) => publicPlayer(match.players[id])),
@@ -1520,8 +1521,7 @@ function getCurrentQuestionForPlayer(match, player) {
     return null;
   }
   const index = player.answered;
-  const question = match.questions[index];
-  if (!question) return null;
+  const question = ensureQuestion(match, index);
   return {
     index,
     expression: question.expression,
@@ -1654,6 +1654,34 @@ function pickQuizCategory(categories) {
   return normalized[crypto.randomInt(normalized.length)];
 }
 
+function ensureQuestion(match, index) {
+  if (!Array.isArray(match.questions)) {
+    match.questions = [];
+  }
+
+  while (match.questions.length <= index) {
+    match.questions.push(createQuestion(match, match.questions.length));
+  }
+
+  return match.questions[index];
+}
+
+function createQuestion(match, index = 0) {
+  const difficulty = DIFFICULTIES[match.difficulty] ? match.difficulty : "medium";
+  const mode = normalizeMode(match.mode);
+
+  if (mode === "quiz") {
+    return createQuizQuestion({
+      difficulty,
+      quizCategories: match.quizCategories,
+      quizCategory: match.quizCategory,
+      index
+    });
+  }
+
+  return createMathQuestion(difficulty);
+}
+
 function createQuestions(input) {
   const options =
     typeof input === "object" && input !== null ? input : { difficulty: input, mode: "math" };
@@ -1676,52 +1704,61 @@ function createMathQuestions(difficulty) {
   const questions = [];
 
   for (let index = 0; index < config.questionCount; index += 1) {
-    const op = config.ops[crypto.randomInt(config.ops.length)];
-    let a = randomInt(config.min, config.max);
-    let b = randomInt(config.min, config.max);
-    let answer;
-
-    if (op === "+") {
-      answer = a + b;
-    } else if (op === "-") {
-      if (b > a) [a, b] = [b, a];
-      answer = a - b;
-    } else if (op === "*") {
-      a = randomInt(config.min, Math.max(config.min + 3, Math.floor(config.max / 4)));
-      b = randomInt(config.min, Math.max(config.min + 3, Math.floor(config.max / 5)));
-      answer = a * b;
-    } else {
-      b = randomInt(2, 12);
-      answer = randomInt(2, Math.max(8, Math.floor(config.max / b)));
-      a = answer * b;
-    }
-
-    questions.push({
-      expression: `${a} ${op} ${b}`,
-      answer
-    });
+    questions.push(createMathQuestion(difficulty));
   }
 
   return questions;
 }
 
+function createMathQuestion(difficulty) {
+  const config = DIFFICULTIES[difficulty];
+  const op = config.ops[crypto.randomInt(config.ops.length)];
+  let a = randomInt(config.min, config.max);
+  let b = randomInt(config.min, config.max);
+  let answer;
+
+  if (op === "+") {
+    answer = a + b;
+  } else if (op === "-") {
+    if (b > a) [a, b] = [b, a];
+    answer = a - b;
+  } else if (op === "*") {
+    a = randomInt(config.min, Math.max(config.min + 3, Math.floor(config.max / 4)));
+    b = randomInt(config.min, Math.max(config.min + 3, Math.floor(config.max / 5)));
+    answer = a * b;
+  } else {
+    b = randomInt(2, 12);
+    answer = randomInt(2, Math.max(8, Math.floor(config.max / b)));
+    a = answer * b;
+  }
+
+  return {
+    expression: `${a} ${op} ${b}`,
+    answer
+  };
+}
+
 function createQuizQuestions(options) {
   const config = DIFFICULTIES[options.difficulty];
-  const quizCategory =
-    QUIZ_CATEGORIES[options.quizCategory] ? options.quizCategory : pickQuizCategory(options.quizCategories);
-  const pool = QUIZ_CATEGORIES[quizCategory].questions;
   const questions = [];
 
   for (let index = 0; index < config.questionCount; index += 1) {
-    const item = pool[crypto.randomInt(pool.length)];
-    questions.push({
-      expression: item.expression,
-      answer: item.answer,
-      category: quizCategory
-    });
+    questions.push(createQuizQuestion({ ...options, index }));
   }
 
   return questions;
+}
+
+function createQuizQuestion(options) {
+  const quizCategory =
+    QUIZ_CATEGORIES[options.quizCategory] ? options.quizCategory : pickQuizCategory(options.quizCategories);
+  const pool = QUIZ_CATEGORIES[quizCategory].questions;
+  const item = pool[crypto.randomInt(pool.length)];
+  return {
+    expression: item.expression,
+    answer: item.answer,
+    category: quizCategory
+  };
 }
 
 function isCorrectAnswer(submitted, expected, mode = "math") {

@@ -80,6 +80,19 @@ async function runScenario() {
     await waitForServer(child);
     assert(true, "server started with temporary storage");
 
+    await api("/api/chat", {
+      method: "POST",
+      body: {
+        devPlayerId: "player1",
+        message: "hi"
+      }
+    });
+    const chat = await api("/api/chat");
+    assert(chat.lastMessage?.text === "hi", "chat message persists after write");
+    await api("/api/dev/reset", { method: "POST", body: {} });
+    const chatAfterReset = await api("/api/chat");
+    assert(chatAfterReset.lastMessage?.text === "hi", "dev reset does not erase persistent chat");
+
     const wallet1 = "0x1000000000000000000000000000000000000001";
     const wallet2 = "0x2000000000000000000000000000000000000002";
 
@@ -207,6 +220,23 @@ async function runScenario() {
     assert(answeredPlayer.wrong === 1, "server ignores client isCorrect/winner fields");
     assert(answeredPlayer.score < 0, "wrong answer subtracts points");
     assert(answered.match.currentQuestion?.index === 1, "server advances to next question after one answer");
+
+    let rollingAnswer = answered;
+    for (let count = 0; count < 20; count += 1) {
+      rollingAnswer = await api(`/api/matches/${joined2.matchId}/answer`, {
+        method: "POST",
+        body: {
+          wallet: wallet2,
+          devPlayerId: "player2",
+          playerId: joined2.playerId,
+          answer: -999999
+        }
+      });
+    }
+    const rollingPlayer = rollingAnswer.match.players.find((player) => player.id === joined2.playerId);
+    assert(rollingPlayer.answered > 15, "server keeps generating questions past the old fixed limit");
+    assert(rollingAnswer.match.status === "active", "match does not finish just because question list grew");
+    assert(rollingAnswer.match.currentQuestion?.index === rollingPlayer.answered, "next generated question is available");
 
     const prodPort = PORT + 1;
     const prodStateFile = path.join(dir, "prod-state.json");
