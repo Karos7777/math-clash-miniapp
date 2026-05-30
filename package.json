@@ -15,7 +15,9 @@
     "check:matchmaking": "node scripts/check-matchmaking.js",
     "check:resolver": "node scripts/check-resolver.js",
     "set:resolver": "node scripts/set-resolver.js",
-    "settle:match": "node scripts/settle-match.js"
+    "settle:match": "node scripts/settle-match.js",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
@@ -23,7 +25,8 @@
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^3.0.8",
-    "hardhat": "^2.22.19"
+    "hardhat": "^2.22.19",
+    "wrangler": "^4.95.0"
   },
   "engines": {
     "node": ">=22.11.0"
