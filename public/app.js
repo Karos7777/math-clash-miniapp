@@ -74,9 +74,11 @@ const $ = (selector) => document.querySelector(selector);
 const elements = {
   saveMiniApp: $("#saveMiniApp"),
   shareMiniApp: $("#shareMiniApp"),
+  adminButton: $("#adminButton"),
   connectWallet: $("#connectWallet"),
   lobbyScreen: $("#lobbyScreen"),
   tableScreen: $("#tableScreen"),
+  adminScreen: $("#adminScreen"),
   startGameButton: $("#startGameButton"),
   lobbyStatus: $("#lobbyStatus"),
   lobbyStake: $("#lobbyStake"),
@@ -109,7 +111,19 @@ const elements = {
   tableStatus: $("#tableStatus"),
   tableLastChat: $("#tableLastChat"),
   tableChatForm: $("#tableChatForm"),
-  tableChatInput: $("#tableChatInput")
+  tableChatInput: $("#tableChatInput"),
+  adminBackButton: $("#adminBackButton"),
+  adminTokenInput: $("#adminTokenInput"),
+  adminFillBotButton: $("#adminFillBotButton"),
+  adminCreateBotButton: $("#adminCreateBotButton"),
+  adminRefreshButton: $("#adminRefreshButton"),
+  adminResetLobbyButton: $("#adminResetLobbyButton"),
+  adminStatus: $("#adminStatus"),
+  adminState: $("#adminState"),
+  walletSheet: $("#walletSheet"),
+  walletOptions: $("#walletOptions"),
+  walletCancelButton: $("#walletCancelButton"),
+  walletPickerStatus: $("#walletPickerStatus")
 };
 
 boot().catch((error) => showError(error.message || "App failed to start."));
@@ -119,6 +133,7 @@ async function boot() {
   elements.lobbyNetwork.textContent = BASE_CHAIN.name;
   elements.lobbyContract.textContent = isAddress(CONTRACT_ADDRESS) ? shortAddress(CONTRACT_ADDRESS) : "Not configured";
   elements.betInput.value = CONFIG.defaultBetEth || "0.00001";
+  elements.adminTokenInput.value = sessionStorage.getItem("pokerAdminToken") || "";
   bindEvents();
   renderRoute();
   initMiniApp().catch((error) => console.info("Mini App init skipped:", error.message));
@@ -129,23 +144,34 @@ async function boot() {
 
 function bindEvents() {
   window.addEventListener("hashchange", renderRoute);
-  elements.connectWallet.addEventListener("click", connectWallet);
+  elements.connectWallet.addEventListener("click", openWalletPicker);
+  elements.walletCancelButton.addEventListener("click", closeWalletPicker);
+  elements.adminButton.addEventListener("click", () => {
+    window.location.hash = "#/admin";
+  });
   elements.startGameButton.addEventListener("click", startGame);
   elements.backToLobbyButton.addEventListener("click", () => {
+    window.location.hash = "";
+  });
+  elements.adminBackButton.addEventListener("click", () => {
     window.location.hash = "";
   });
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
   elements.confirmButton.addEventListener("click", confirmOrJoin);
-  elements.checkButton.addEventListener("click", () => sendTableTx("check", () => state.writeContract.check(tableIdBytes())));
+  elements.checkButton.addEventListener("click", checkAction);
   elements.betButton.addEventListener("click", bet);
   elements.callButton.addEventListener("click", callBet);
-  elements.foldButton.addEventListener("click", () => sendTableTx("fold", () => state.writeContract.fold(tableIdBytes())));
+  elements.foldButton.addEventListener("click", foldAction);
   elements.timeoutButton.addEventListener("click", () => sendTableTx("timeout", () => state.writeContract.timeout(tableIdBytes())));
   elements.settleButton.addEventListener("click", settleShowdown);
   elements.claimButton.addEventListener("click", () => sendTableTx("claim", () => state.writeContract.claimWinnings()));
   elements.lobbyChatForm.addEventListener("submit", sendLobbyChat);
   elements.tableChatForm.addEventListener("submit", sendTableChat);
+  elements.adminFillBotButton.addEventListener("click", () => adminAction("/api/admin/bots/fill-waiting"));
+  elements.adminCreateBotButton.addEventListener("click", () => adminAction("/api/admin/bots/create-waiting"));
+  elements.adminRefreshButton.addEventListener("click", loadAdminState);
+  elements.adminResetLobbyButton.addEventListener("click", () => adminAction("/api/admin/reset-lobby"));
 }
 
 async function initMiniApp() {
@@ -174,13 +200,20 @@ async function initReadContract() {
 }
 
 function renderRoute() {
+  const adminRoute = window.location.hash === "#/admin";
   const tableId = currentRouteTableId();
-  state.tableId = tableId;
-  document.body.classList.toggle("table-route", Boolean(tableId));
-  elements.lobbyScreen.hidden = Boolean(tableId);
-  elements.tableScreen.hidden = !tableId;
+  state.tableId = adminRoute ? "" : tableId;
+  document.body.classList.toggle("table-route", Boolean(tableId) && !adminRoute);
+  document.body.classList.toggle("admin-route", adminRoute);
+  elements.lobbyScreen.hidden = Boolean(tableId) || adminRoute;
+  elements.tableScreen.hidden = !tableId || adminRoute;
+  elements.adminScreen.hidden = !adminRoute;
 
-  if (tableId) {
+  if (adminRoute) {
+    state.offchainTable = null;
+    state.chainTable = null;
+    loadAdminState();
+  } else if (tableId) {
     elements.tableIdLabel.textContent = shortTableId(tableId);
     refreshTable();
   } else {
@@ -192,11 +225,39 @@ function renderRoute() {
   }
 }
 
-async function connectWallet() {
+async function openWalletPicker() {
+  const options = await detectWalletOptions();
+  elements.walletOptions.innerHTML = "";
+  elements.walletPickerStatus.textContent = options.length
+    ? "Choose an available wallet provider."
+    : "No injected wallet provider found. Open in Farcaster, Rabby, MetaMask, OKX, or Coinbase Wallet.";
+
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.className = "wallet-option";
+    button.type = "button";
+    button.innerHTML = `<span>${option.label}</span><small>${option.detail}</small>`;
+    button.addEventListener("click", () => connectWallet(option));
+    elements.walletOptions.append(button);
+  }
+
+  elements.walletSheet.hidden = false;
+}
+
+function closeWalletPicker() {
+  elements.walletSheet.hidden = true;
+}
+
+async function connectWallet(option) {
+  if (!option) {
+    await openWalletPicker();
+    return;
+  }
+
   try {
-    state.provider = await getWalletProvider();
+    state.provider = await option.getProvider();
     if (!state.provider?.request) {
-      setLobbyStatus("Open in Farcaster/Base app or a browser with Rabby/Coinbase Wallet.");
+      setLobbyStatus("Selected wallet provider is unavailable.");
       return;
     }
 
@@ -212,6 +273,7 @@ async function connectWallet() {
       state.writeContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
     }
 
+    closeWalletPicker();
     setLobbyStatus("Wallet connected.");
     renderControls();
     if (state.tableId) await refreshTable();
@@ -238,26 +300,44 @@ async function refreshWalletFromProvider() {
 }
 
 async function getWalletProvider() {
-  if (state.sdk?.wallet?.getEthereumProvider) {
-    try {
-      const miniAppProvider = await withTimeout(state.sdk.wallet.getEthereumProvider(), 5000);
-      if (miniAppProvider?.request) return miniAppProvider;
-    } catch (error) {
-      console.info("Mini App wallet unavailable:", error.message);
-    }
+  const options = await detectWalletOptions();
+  const preferred = options.find((option) => option.id === "farcaster") || options[0];
+  return preferred ? preferred.getProvider() : null;
+}
+
+async function detectWalletOptions() {
+  const options = [];
+  const seen = new Set();
+  const push = (id, label, provider, detail = "Browser wallet") => {
+    if (!provider?.request || seen.has(id)) return;
+    seen.add(id);
+    options.push({ id, label, detail, getProvider: async () => provider });
+  };
+
+  if (state.sdk?.wallet?.getEthereumProvider && !seen.has("farcaster")) {
+    options.push({
+      id: "farcaster",
+      label: "Farcaster Wallet",
+      detail: "Mini App provider",
+      getProvider: async () => withTimeout(state.sdk.wallet.getEthereumProvider(), 5000)
+    });
+    seen.add("farcaster");
   }
 
-  const candidates = [];
-  if (window.rabby) candidates.push(window.rabby);
-  if (window.coinbaseWalletExtension) candidates.push(window.coinbaseWalletExtension);
-  if (window.ethereum?.providers?.length) candidates.push(...window.ethereum.providers);
-  if (window.ethereum) candidates.push(window.ethereum);
-  return (
-    candidates.find((provider) => provider?.isRabby) ||
-    candidates.find((provider) => provider?.isCoinbaseWallet) ||
-    candidates.find((provider) => provider?.request) ||
-    null
-  );
+  push("rabby-global", "Rabby Wallet", window.rabby, "Detected extension");
+  push("okx-global", "OKX Wallet", window.okxwallet, "Detected extension");
+  push("coinbase-global", "Coinbase Wallet", window.coinbaseWalletExtension, "Detected extension");
+
+  const injected = window.ethereum?.providers?.length ? window.ethereum.providers : window.ethereum ? [window.ethereum] : [];
+  for (const provider of injected) {
+    if (provider?.isRabby) push("rabby", "Rabby Wallet", provider, "Injected provider");
+    else if (provider?.isMetaMask) push("metamask", "MetaMask", provider, "Injected provider");
+    else if (provider?.isOkxWallet || provider?.isOKExWallet) push("okx", "OKX Wallet", provider, "Injected provider");
+    else if (provider?.isCoinbaseWallet) push("coinbase", "Coinbase Wallet", provider, "Injected provider");
+    else push(`wallet-${options.length}`, "Browser Wallet", provider, "Injected provider");
+  }
+
+  return options;
 }
 
 async function requestAccounts(provider) {
@@ -368,18 +448,19 @@ async function syncOffchainWithChain() {
 function renderTable() {
   const chain = state.chainTable || {};
   const offchain = state.offchainTable || {};
-  const stage = chain.exists ? chain.stage : offchain.stage || "waiting";
-  const player1 = chain.exists ? chain.player1 : offchain.player1 || "";
-  const player2 = chain.exists ? chain.player2 : offchain.player2 || "";
-  const pot = chain.exists ? formatEth(chain.pot || 0n) : "0 ETH";
+  const simulated = Boolean(offchain.simulation);
+  const stage = !simulated && chain.exists ? chain.stage : offchain.stage || "waiting";
+  const player1 = !simulated && chain.exists ? chain.player1 : offchain.player1 || "";
+  const player2 = !simulated && chain.exists ? chain.player2 : offchain.player2 || "";
+  const pot = simulated ? `${offchain.pot || "0"} ETH` : chain.exists ? formatEth(chain.pot || 0n) : "0 ETH";
   const stake = chain.exists && chain.stake ? formatEth(chain.stake) : `${CONFIG.defaultStakeEth || "0.0001"} ETH`;
 
-  elements.player1Label.textContent = player1 ? labelAddress(player1) : "Waiting";
-  elements.player2Label.textContent = player2 ? labelAddress(player2) : "Waiting";
+  elements.player1Label.textContent = player1 ? labelPlayer(player1) : "Waiting";
+  elements.player2Label.textContent = player2 ? labelPlayer(player2) : "Waiting";
   elements.potLabel.textContent = pot;
   elements.stakeLabel.textContent = `${stake} stake`;
   elements.stageLabel.textContent = stage;
-  elements.turnLabel.textContent = turnLabel(chain.turn);
+  elements.turnLabel.textContent = turnLabel(simulated ? offchain.turn : chain.turn);
   elements.tableStatus.textContent = tableStatusText(stage, chain, offchain);
   renderCards(elements.playerCards, offchain.playerCards || [], true);
   renderCards(elements.communityCards, offchain.communityCards || [], false);
@@ -390,6 +471,11 @@ function renderTable() {
 function renderControls() {
   const connected = Boolean(state.account);
   const contractConfigured = isAddress(CONTRACT_ADDRESS);
+  if (state.offchainTable?.simulation) {
+    renderSimulationControls(connected);
+    return;
+  }
+
   const chain = state.chainTable;
   const stage = chain?.stage || "waiting";
   const isPlayer = chain?.exists && isCurrentPlayer(chain);
@@ -430,7 +516,39 @@ function renderControls() {
   }
 }
 
+function renderSimulationControls(connected) {
+  const table = state.offchainTable || {};
+  const stage = table.stage || "waiting";
+  const isPlayer = sameAddress(table.player1, state.account) || sameAddress(table.player2, state.account);
+  const needsConfirm = connected && isPlayer && stage === "confirming";
+  const myTurn = connected && isPlayer && sameAddress(table.turn, state.account);
+  const canAct = ACTIVE_STAGES.has(stage) && myTurn;
+  const canClaim = false;
+
+  elements.startGameButton.disabled = state.busy || !connected;
+  elements.confirmButton.hidden = !needsConfirm;
+  elements.checkButton.hidden = !canAct;
+  elements.betField.hidden = !canAct;
+  elements.betButton.hidden = !canAct;
+  elements.callButton.hidden = true;
+  elements.foldButton.hidden = !canAct;
+  elements.timeoutButton.hidden = true;
+  elements.settleButton.hidden = true;
+  elements.claimButton.hidden = !canClaim;
+
+  elements.confirmButton.textContent = "Start Bot Hand";
+  elements.confirmButton.disabled = state.busy || !connected;
+  elements.checkButton.disabled = state.busy;
+  elements.betButton.disabled = state.busy;
+  elements.foldButton.disabled = state.busy;
+}
+
 async function confirmOrJoin() {
+  if (state.offchainTable?.simulation) {
+    await simulateAction("confirm");
+    return;
+  }
+
   if (!state.chainTable?.exists || !isCurrentPlayer(state.chainTable)) {
     const value = parseEth(CONFIG.defaultStakeEth || "0.0001");
     await sendTableTx("confirm stake", () => state.writeContract.joinTable(tableIdBytes(), { value }));
@@ -439,18 +557,44 @@ async function confirmOrJoin() {
   await sendTableTx("confirm", () => state.writeContract.confirm(tableIdBytes()));
 }
 
+async function checkAction() {
+  if (state.offchainTable?.simulation) {
+    await simulateAction("check");
+    return;
+  }
+  await sendTableTx("check", () => state.writeContract.check(tableIdBytes()));
+}
+
 async function bet() {
+  if (state.offchainTable?.simulation) {
+    await simulateAction("bet", { amount: elements.betInput.value || CONFIG.defaultBetEth || "0.00001" });
+    return;
+  }
+
   const value = parseEth(elements.betInput.value || CONFIG.defaultBetEth || "0.00001");
   await sendTableTx("bet", () => state.writeContract.bet(tableIdBytes(), { value }));
 }
 
 async function callBet() {
+  if (state.offchainTable?.simulation) {
+    await simulateAction("call");
+    return;
+  }
+
   const value = BigInt(state.chainTable?.currentBet || 0);
   if (value <= 0n) {
     showError("No open bet to call.");
     return;
   }
   await sendTableTx("call", () => state.writeContract.call(tableIdBytes(), { value }));
+}
+
+async function foldAction() {
+  if (state.offchainTable?.simulation) {
+    await simulateAction("fold");
+    return;
+  }
+  await sendTableTx("fold", () => state.writeContract.fold(tableIdBytes()));
 }
 
 async function settleShowdown() {
@@ -460,6 +604,30 @@ async function settleShowdown() {
     return;
   }
   await sendTableTx("settle", () => state.writeContract.submitResult(tableIdBytes(), winner));
+}
+
+async function simulateAction(action, extra = {}) {
+  if (!state.account) {
+    showError("Wallet not connected.");
+    return;
+  }
+
+  try {
+    setBusy(true, `${action}: bot simulation...`);
+    const response = await fetch(`/api/tables/${encodeURIComponent(state.tableId)}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ walletAddress: state.account, action, ...extra })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Simulation action failed.");
+    state.offchainTable = data.table;
+    renderTable();
+  } catch (error) {
+    showError(error.message || "Simulation action failed.");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function sendTableTx(label, buildTx) {
@@ -635,6 +803,84 @@ function attachEvents() {
   });
 }
 
+async function loadAdminState() {
+  const token = adminToken();
+  if (!token) {
+    elements.adminStatus.textContent = "Enter ADMIN_TOKEN first.";
+    elements.adminState.innerHTML = "";
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/admin/state", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Admin state unavailable.");
+    elements.adminStatus.textContent = data.waitingTableId
+      ? `Waiting table: ${shortTableId(data.waitingTableId)}`
+      : "No waiting table.";
+    renderAdminTables(data.tables || []);
+  } catch (error) {
+    elements.adminStatus.textContent = error.message || "Admin state unavailable.";
+  }
+}
+
+async function adminAction(path) {
+  const token = adminToken();
+  if (!token) {
+    elements.adminStatus.textContent = "Enter ADMIN_TOKEN first.";
+    return;
+  }
+
+  try {
+    elements.adminStatus.textContent = "Admin action pending...";
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Admin action failed.");
+    const table = data.table;
+    elements.adminStatus.textContent = table?.id
+      ? `Done. Table ${shortTableId(table.id)} is ready.`
+      : "Done.";
+    await loadAdminState();
+  } catch (error) {
+    elements.adminStatus.textContent = error.message || "Admin action failed.";
+  }
+}
+
+function adminToken() {
+  const token = elements.adminTokenInput.value.trim();
+  if (token) sessionStorage.setItem("pokerAdminToken", token);
+  return token;
+}
+
+function renderAdminTables(tables) {
+  elements.adminState.innerHTML = "";
+  if (!tables.length) {
+    elements.adminState.textContent = "No admin table history yet.";
+    return;
+  }
+
+  for (const table of tables) {
+    const row = document.createElement("div");
+    row.className = "admin-table-row";
+    const link = document.createElement("button");
+    link.className = "ghost-button compact-button";
+    link.type = "button";
+    link.textContent = "Open";
+    link.addEventListener("click", () => {
+      window.location.hash = `#/table/${table.id}`;
+    });
+    const text = document.createElement("div");
+    text.innerHTML = `<strong>${shortTableId(table.id)}</strong><br><span>${table.stage || "--"}${table.simulation ? " / bot test" : ""}</span>`;
+    row.append(text, link);
+    elements.adminState.append(row);
+  }
+}
+
 async function saveMiniApp() {
   try {
     if (typeof state.sdk?.actions?.addMiniApp !== "function") return;
@@ -680,6 +926,12 @@ function currentRouteTableId() {
 }
 
 function tableStatusText(stage, chain, offchain) {
+  if (offchain?.simulation) {
+    if (stage === "confirming") return "Bot test table. Start Bot Hand uses no blockchain transaction.";
+    if (ACTIVE_STAGES.has(stage)) return sameAddress(offchain.turn, state.account) ? "Your turn against bot." : "Bot is thinking.";
+    if (stage === "finished") return offchain.winner ? `Bot test finished. Winner: ${labelPlayer(offchain.winner)}.` : "Bot test finished.";
+    return "Bot simulation mode. No bot transactions are sent.";
+  }
   if (!isAddress(CONTRACT_ADDRESS)) return "Contract not configured.";
   if (!chain?.exists && !(offchain?.player1 && offchain?.player2)) return "Waiting for second player.";
   if (!chain?.exists) return "Both players are matched. Confirm your stake transaction.";
@@ -696,9 +948,17 @@ function labelAddress(address) {
   return sameAddress(address, state.account) ? "You" : shortAddress(address);
 }
 
+function labelPlayer(address) {
+  if (!isAddress(address) || address === ZERO_ADDRESS) return "--";
+  const labels = state.offchainTable?.playerLabels || {};
+  const botLabel = labels[address.toLowerCase()];
+  if (botLabel) return botLabel;
+  return labelAddress(address);
+}
+
 function turnLabel(address) {
   if (!isAddress(address) || address === ZERO_ADDRESS) return "--";
-  return sameAddress(address, state.account) ? "You" : shortAddress(address);
+  return labelPlayer(address);
 }
 
 function myConfirmed(chain) {

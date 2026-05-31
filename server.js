@@ -30,6 +30,7 @@ const FARCASTER_ACCOUNT_ASSOCIATION_PAYLOAD =
   process.env.FARCASTER_ACCOUNT_ASSOCIATION_PAYLOAD || "";
 const FARCASTER_ACCOUNT_ASSOCIATION_SIGNATURE =
   process.env.FARCASTER_ACCOUNT_ASSOCIATION_SIGNATURE || "";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -52,6 +53,7 @@ const server = http.createServer((req, res) => {
         baseChainId: BASE_CHAIN_ID,
         gameContractConfigured: Boolean(GAME_CONTRACT_ADDRESS),
         chatKvConfigured: false,
+        adminConfigured: Boolean(ADMIN_TOKEN),
         game: "on-chain-poker-table"
       });
       return;
@@ -59,6 +61,16 @@ const server = http.createServer((req, res) => {
 
     if (req.method === "GET" && url.pathname === "/config.js") {
       serveClientConfig(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/admin/state") {
+      serveAdminState(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/admin/")) {
+      handleAdminAction(req, url, res);
       return;
     }
 
@@ -77,6 +89,10 @@ const server = http.createServer((req, res) => {
       }
       if (req.method === "POST" && tableId && action === "sync") {
         handleTableSync(req, tableId, res);
+        return;
+      }
+      if (req.method === "POST" && tableId && action === "simulate") {
+        handleTableSimulation(req, tableId, res);
         return;
       }
     }
@@ -146,6 +162,97 @@ function serveStatic(req, res, url) {
   res.end(body);
 }
 
+function serveAdminState(req, res) {
+  if (!requireAdmin(req, res)) return;
+
+  const state = storage.loadState();
+  const lobby = normalizeLobby(state.pokerLobby);
+  const tables = lobby.tableIds
+    .slice(-25)
+    .map((tableId) => state.pokerTables?.[tableId])
+    .filter(Boolean)
+    .map(adminTableSummary)
+    .reverse();
+
+  sendJson(res, 200, {
+    ok: true,
+    waitingTableId: lobby.waitingTableId || "",
+    tables
+  });
+}
+
+function handleAdminAction(req, url, res) {
+  if (!requireAdmin(req, res)) return;
+
+  const action = url.pathname.replace(/^\/api\/admin\//, "");
+  if (action === "bots/create-waiting") {
+    adminCreateBotWaiting(res);
+    return;
+  }
+  if (action === "bots/fill-waiting") {
+    adminFillWaitingWithBot(res);
+    return;
+  }
+  if (action === "reset-lobby") {
+    adminResetLobby(res);
+    return;
+  }
+  sendJson(res, 404, { error: "Unknown admin action" });
+}
+
+function adminCreateBotWaiting(res) {
+  const state = storage.loadState();
+  state.pokerLobby = normalizeLobby(state.pokerLobby);
+  state.pokerTables = state.pokerTables || {};
+
+  const bot = createBot();
+  const table = createPokerTable(bot.address);
+  markBotTable(table, bot);
+  state.pokerLobby.waitingTableId = table.id;
+  trackTable(state.pokerLobby, table.id);
+  state.pokerTables[table.id] = table;
+  storage.saveState(state);
+  sendJson(res, 200, { ok: true, bot, table: publicTable(table, "") });
+}
+
+function adminFillWaitingWithBot(res) {
+  const state = storage.loadState();
+  state.pokerLobby = normalizeLobby(state.pokerLobby);
+  state.pokerTables = state.pokerTables || {};
+  const waitingId = normalizeTableId(state.pokerLobby.waitingTableId);
+
+  if (!waitingId) {
+    adminCreateBotWaiting(res);
+    return;
+  }
+
+  const table = state.pokerTables[waitingId];
+  if (!table || table.status !== "waiting" || !table.player1 || table.player2) {
+    adminCreateBotWaiting(res);
+    return;
+  }
+
+  const bot = createBot();
+  table.player2 = bot.address;
+  table.status = "confirming";
+  table.stage = "confirming";
+  table.updatedAt = new Date().toISOString();
+  markBotTable(table, bot);
+  dealTableCards(table);
+  state.pokerLobby.waitingTableId = "";
+  trackTable(state.pokerLobby, table.id);
+  storage.saveState(state);
+  sendJson(res, 200, { ok: true, bot, table: publicTable(table, "") });
+}
+
+function adminResetLobby(res) {
+  const state = storage.loadState();
+  state.pokerLobby = normalizeLobby(state.pokerLobby);
+  state.pokerLobby.waitingTableId = "";
+  storage.saveState(state);
+  sendJson(res, 200, { ok: true, waitingTableId: "" });
+}
+
 function handleLobbyJoin(req, res) {
   readJsonBody(req)
     .then((body) => {
@@ -156,7 +263,7 @@ function handleLobbyJoin(req, res) {
       }
 
       const state = storage.loadState();
-      state.pokerLobby = state.pokerLobby || { waitingTableId: "" };
+      state.pokerLobby = normalizeLobby(state.pokerLobby);
       state.pokerTables = state.pokerTables || {};
 
       let table = null;
@@ -182,8 +289,13 @@ function handleLobbyJoin(req, res) {
       if (!table) {
         table = createPokerTable(walletAddress);
         state.pokerLobby.waitingTableId = table.id;
+        trackTable(state.pokerLobby, table.id);
       }
 
+      if (table.bots && Object.keys(table.bots).length) {
+        table.simulation = true;
+      }
+      trackTable(state.pokerLobby, table.id);
       state.pokerTables[table.id] = table;
       storage.saveState(state);
       sendJson(res, 200, { table: publicTable(table, walletAddress) });
@@ -257,6 +369,59 @@ function handleTableSync(req, rawTableId, res) {
     });
 }
 
+function handleTableSimulation(req, rawTableId, res) {
+  readJsonBody(req)
+    .then((body) => {
+      const tableId = normalizeTableId(rawTableId);
+      if (!tableId) {
+        sendJson(res, 400, { error: "Bad table id" });
+        return;
+      }
+
+      const walletAddress = normalizeAddress(body.walletAddress);
+      const state = storage.loadState();
+      const table = state.pokerTables?.[tableId];
+      if (!table) {
+        sendJson(res, 404, { error: "Table not found" });
+        return;
+      }
+      if (!table.simulation) {
+        sendJson(res, 400, { error: "This table is not in bot simulation mode" });
+        return;
+      }
+      if (!walletAddress || !isTablePlayer(table, walletAddress) || isBot(table, walletAddress)) {
+        sendJson(res, 403, { error: "Only the human player can control this bot test table" });
+        return;
+      }
+
+      const action = String(body.action || "").toLowerCase();
+      if (table.stage === "confirming" && action === "confirm") {
+        table.stage = "preflop";
+        table.status = "playing";
+        table.turn = walletAddress;
+        table.pot = table.pot || "0";
+      } else if (ACTIVE_SIM_STAGES.includes(table.stage) && sameAddress(table.turn, walletAddress)) {
+        try {
+          applySimulationAction(table, walletAddress, action, body.amount);
+        } catch (error) {
+          sendJson(res, 400, { error: error.message || "Bad simulation action" });
+          return;
+        }
+      } else {
+        sendJson(res, 400, { error: "Not your turn" });
+        return;
+      }
+
+      table.updatedAt = new Date().toISOString();
+      storage.saveState(state);
+      sendJson(res, 200, { ok: true, table: publicTable(table, walletAddress) });
+    })
+    .catch((error) => {
+      const badRequest = error instanceof SyntaxError || error.message === "Body too large";
+      sendJson(res, badRequest ? 400 : 500, { error: badRequest ? "Bad JSON" : "Simulation unavailable" });
+    });
+}
+
 function serveChatMessages(url, res) {
   const room = normalizeRoom(url.searchParams.get("room"));
   const state = storage.loadState();
@@ -309,6 +474,11 @@ function createPokerTable(walletAddress) {
     player1: walletAddress,
     player2: "",
     stake: DEFAULT_STAKE_ETH,
+    pot: "0",
+    turn: "",
+    simulation: false,
+    bots: {},
+    playerLabels: {},
     winner: "",
     deck: shuffleDeck(`${id}:${now}`),
     playerCards: {},
@@ -316,6 +486,12 @@ function createPokerTable(walletAddress) {
     createdAt: now,
     updatedAt: now
   };
+}
+
+function markBotTable(table, bot) {
+  table.simulation = true;
+  table.bots = { ...(table.bots || {}), [normalizeAddress(bot.address)]: true };
+  table.playerLabels = { ...(table.playerLabels || {}), [normalizeAddress(bot.address)]: bot.name };
 }
 
 function dealTableCards(table) {
@@ -337,6 +513,11 @@ function publicTable(table, viewer) {
     player1: table.player1 || "",
     player2: table.player2 || "",
     stake: table.stake || DEFAULT_STAKE_ETH,
+    pot: table.pot || "0",
+    turn: table.turn || "",
+    simulation: Boolean(table.simulation),
+    bots: table.bots || {},
+    playerLabels: table.playerLabels || {},
     winner: table.winner || "",
     playerCards: viewer && table.playerCards ? table.playerCards[viewer] || [] : [],
     communityCards: communityForStage(table.communityCards || [], stage),
@@ -344,6 +525,135 @@ function publicTable(table, viewer) {
     updatedAt: table.updatedAt,
     prototypeNotice: "Card dealing is off-chain in this prototype and not fully trustless yet."
   };
+}
+
+const ACTIVE_SIM_STAGES = ["preflop", "flop", "turn", "river"];
+
+function applySimulationAction(table, walletAddress, action, amount) {
+  if (action === "fold") {
+    table.winner = botOpponent(table, walletAddress);
+    table.stage = "finished";
+    table.status = "finished";
+    table.turn = "";
+    return;
+  }
+
+  if (action === "bet") {
+    table.pot = addEthStrings(table.pot, amount);
+    table.pot = addEthStrings(table.pot, amount);
+    advanceSimulationStage(table, walletAddress);
+    return;
+  }
+
+  if (action === "check" || action === "call") {
+    advanceSimulationStage(table, walletAddress);
+    return;
+  }
+
+  throw new Error("Unknown simulation action");
+}
+
+function advanceSimulationStage(table, walletAddress) {
+  const current = normalizeStage(table.stage);
+  if (current === "preflop") table.stage = "flop";
+  else if (current === "flop") table.stage = "turn";
+  else if (current === "turn") table.stage = "river";
+  else {
+    table.stage = "finished";
+    table.status = "finished";
+    table.winner = pickWinner(table);
+    table.turn = "";
+    return;
+  }
+  table.status = "playing";
+  table.turn = walletAddress;
+}
+
+function addEthStrings(current, amount) {
+  const sum = Number(current || 0) + Number(amount || 0);
+  if (!Number.isFinite(sum) || sum < 0) return String(current || "0");
+  return sum.toFixed(8).replace(/0+$/, "").replace(/\.$/, "") || "0";
+}
+
+function botOpponent(table, walletAddress) {
+  const p1 = normalizeAddress(table.player1);
+  const p2 = normalizeAddress(table.player2);
+  return sameAddress(walletAddress, p1) ? p2 : p1;
+}
+
+function isTablePlayer(table, walletAddress) {
+  return sameAddress(table.player1, walletAddress) || sameAddress(table.player2, walletAddress);
+}
+
+function isBot(table, walletAddress) {
+  return Boolean(table.bots?.[normalizeAddress(walletAddress)]);
+}
+
+function sameAddress(a, b) {
+  return Boolean(a && b && normalizeAddress(a) === normalizeAddress(b));
+}
+
+function createBot() {
+  const names = ["Bot Alpha", "Bot Bravo", "Bot Charlie", "Bot Delta", "Bot Echo"];
+  const address = randomBotAddress();
+  return {
+    id: `bot-${address.slice(2, 10)}`,
+    name: names[hashSeed(address) % names.length],
+    address
+  };
+}
+
+function randomBotAddress() {
+  const bytes = crypto.randomBytes(20);
+  bytes[0] = 0xb0;
+  return `0x${bytes.toString("hex")}`;
+}
+
+function normalizeLobby(lobby) {
+  const value = lobby && typeof lobby === "object" ? lobby : {};
+  const tableIds = Array.isArray(value.tableIds)
+    ? value.tableIds.map(normalizeTableId).filter(Boolean).slice(-100)
+    : [];
+  return {
+    waitingTableId: normalizeTableId(value.waitingTableId) || "",
+    tableIds
+  };
+}
+
+function trackTable(lobby, tableId) {
+  const id = normalizeTableId(tableId);
+  if (!id) return;
+  lobby.tableIds = Array.isArray(lobby.tableIds) ? lobby.tableIds : [];
+  lobby.tableIds = [...new Set([...lobby.tableIds, id])].slice(-100);
+}
+
+function adminTableSummary(table) {
+  return {
+    id: table.id,
+    status: table.status,
+    stage: table.stage,
+    player1: table.player1 || "",
+    player2: table.player2 || "",
+    simulation: Boolean(table.simulation),
+    updatedAt: table.updatedAt
+  };
+}
+
+function requireAdmin(req, res) {
+  if (!ADMIN_TOKEN) {
+    sendJson(res, 503, { error: "Admin panel is disabled. Set ADMIN_TOKEN in environment variables." });
+    return false;
+  }
+
+  const header = req.headers.authorization || "";
+  const bearer = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+  const token = bearer || req.headers["x-admin-token"] || "";
+  if (token !== ADMIN_TOKEN) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return false;
+  }
+
+  return true;
 }
 
 function communityForStage(cards, stage) {

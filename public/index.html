@@ -32,6 +32,7 @@
         <div class="top-actions">
           <button class="miniapp-action" id="saveMiniApp" type="button" hidden>Save</button>
           <button class="miniapp-action" id="shareMiniApp" type="button" hidden>Share</button>
+          <button class="miniapp-action" id="adminButton" type="button">Admin</button>
           <button class="wallet-pill" id="connectWallet" type="button">Connect Wallet</button>
         </div>
       </header>
@@ -161,10 +162,64 @@
             </form>
           </section>
         </section>
+
+        <section class="screen admin-screen" id="adminScreen" hidden>
+          <div class="admin-panel">
+            <div class="table-top">
+              <button class="ghost-button" id="adminBackButton" type="button">Lobby</button>
+              <div>
+                <p class="eyebrow">Admin</p>
+                <strong>Bot test panel</strong>
+              </div>
+            </div>
+
+            <div class="admin-grid">
+              <section class="chat-panel">
+                <p class="eyebrow">Access</p>
+                <label class="field-label">
+                  <span>Admin token</span>
+                  <input id="adminTokenInput" type="password" autocomplete="off" placeholder="ADMIN_TOKEN">
+                </label>
+                <p class="notice">
+                  Admin actions are checked on the server. The token must be set as ADMIN_TOKEN in Cloudflare env.
+                </p>
+              </section>
+
+              <section class="chat-panel">
+                <p class="eyebrow">Bots</p>
+                <div class="action-row">
+                  <button id="adminFillBotButton" type="button">Add bot to waiting player</button>
+                  <button id="adminCreateBotButton" type="button">Create bot waiting table</button>
+                  <button id="adminRefreshButton" type="button">Refresh admin state</button>
+                  <button id="adminResetLobbyButton" type="button">Clear lobby wait</button>
+                </div>
+              </section>
+            </div>
+
+            <section class="chat-panel">
+              <div class="section-title">
+                <p class="eyebrow">Status</p>
+              </div>
+              <p class="status-line" id="adminStatus">Enter admin token to manage bot test tables.</p>
+              <div class="admin-state" id="adminState"></div>
+            </section>
+          </div>
+        </section>
       </main>
     </div>
 
-    <script src="/config.js?v=mvp2"></script>
-    <script type="module" src="/app.js?v=mvp2"></script>
+    <div class="wallet-sheet" id="walletSheet" hidden>
+      <div class="wallet-card">
+        <div class="section-title">
+          <p class="eyebrow">Connect wallet</p>
+          <button class="ghost-button compact-button" id="walletCancelButton" type="button">Close</button>
+        </div>
+        <div class="wallet-options" id="walletOptions"></div>
+        <p class="status-line" id="walletPickerStatus">Choose an available wallet provider.</p>
+      </div>
+    </div>
+
+    <script src="/config.js?v=mvp3"></script>
+    <script type="module" src="/app.js?v=mvp3"></script>
   </body>
 </html>

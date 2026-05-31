@@ -24,9 +24,18 @@ export async function onRequest(context) {
       baseChainId: baseChainId(context),
       gameContractConfigured: Boolean(gameContractAddress(context)),
       chatKvConfigured: Boolean(chatKv(context)),
+      adminConfigured: Boolean(context.env.ADMIN_TOKEN),
       game: "on-chain-poker-table",
       runtime: "cloudflare-pages"
     });
+  }
+
+  if (url.pathname === "/api/admin/state" && context.request.method === "GET") {
+    return getAdminState(context);
+  }
+
+  if (url.pathname.startsWith("/api/admin/") && context.request.method === "POST") {
+    return handleAdminAction(context, url);
   }
 
   if (url.pathname === "/api/lobby/join" && context.request.method === "POST") {
@@ -43,6 +52,9 @@ export async function onRequest(context) {
     if (context.request.method === "POST" && tableId && action === "sync") {
       return syncTableState(context, tableId);
     }
+    if (context.request.method === "POST" && tableId && action === "simulate") {
+      return simulateTableAction(context, tableId);
+    }
   }
 
   if (url.pathname === "/api/chat") {
@@ -55,6 +67,81 @@ export async function onRequest(context) {
   }
 
   return context.next();
+}
+
+async function getAdminState(context) {
+  const auth = requireAdmin(context);
+  if (!auth.ok) return auth.response;
+
+  const lobby = await readLobby(context);
+  const tableIds = lobby.tableIds || [];
+  const tables = [];
+  for (const tableId of tableIds.slice(-25)) {
+    const table = await readPokerTable(context, tableId);
+    if (table) tables.push(adminTableSummary(table));
+  }
+
+  return jsonResponse({
+    ok: true,
+    waitingTableId: lobby.waitingTableId || "",
+    tables: tables.reverse()
+  });
+}
+
+async function handleAdminAction(context, url) {
+  const auth = requireAdmin(context);
+  if (!auth.ok) return auth.response;
+
+  const action = url.pathname.replace(/^\/api\/admin\//, "");
+  if (action === "bots/create-waiting") return adminCreateBotWaiting(context);
+  if (action === "bots/fill-waiting") return adminFillWaitingWithBot(context);
+  if (action === "reset-lobby") return adminResetLobby(context);
+  return jsonResponse({ error: "Unknown admin action" }, 404);
+}
+
+async function adminCreateBotWaiting(context) {
+  const lobby = await readLobby(context);
+  const bot = createBot();
+  const table = createPokerTable(bot.address);
+  markBotTable(table, bot);
+  lobby.waitingTableId = table.id;
+  trackTable(lobby, table.id);
+  await writePokerTable(context, table);
+  await writeLobby(context, lobby);
+  return jsonResponse({ ok: true, bot, table: publicTable(table, "") });
+}
+
+async function adminFillWaitingWithBot(context) {
+  const lobby = await readLobby(context);
+  const waitingId = normalizeTableId(lobby.waitingTableId);
+  if (!waitingId) {
+    return adminCreateBotWaiting(context);
+  }
+
+  const table = await readPokerTable(context, waitingId);
+  if (!table || table.status !== "waiting" || !table.player1 || table.player2) {
+    return adminCreateBotWaiting(context);
+  }
+
+  const bot = createBot();
+  table.player2 = bot.address;
+  table.status = "confirming";
+  table.stage = "confirming";
+  table.updatedAt = new Date().toISOString();
+  markBotTable(table, bot);
+  dealTableCards(table);
+  lobby.waitingTableId = "";
+  trackTable(lobby, table.id);
+  await writePokerTable(context, table);
+  await writeLobby(context, lobby);
+  return jsonResponse({ ok: true, bot, table: publicTable(table, "") });
+}
+
+async function adminResetLobby(context) {
+  const lobby = await readLobby(context);
+  lobby.waitingTableId = "";
+  await writeLobby(context, lobby);
+  return jsonResponse({ ok: true, waitingTableId: "" });
 }
 
 async function joinLobby(context) {
@@ -100,8 +187,13 @@ async function joinLobby(context) {
   if (!table) {
     table = createPokerTable(walletAddress);
     lobby.waitingTableId = table.id;
+    trackTable(lobby, table.id);
   }
 
+  if (table.bots && Object.keys(table.bots).length) {
+    table.simulation = true;
+  }
+  trackTable(lobby, table.id);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ table: publicTable(table, walletAddress) });
@@ -150,6 +242,46 @@ async function syncTableState(context, rawTableId) {
   table.updatedAt = new Date().toISOString();
   await writePokerTable(context, table);
   return jsonResponse({ table: publicTable(table, normalizeAddress(body.viewer || body.walletAddress)) });
+}
+
+async function simulateTableAction(context, rawTableId) {
+  const tableId = normalizeTableId(rawTableId);
+  if (!tableId) return jsonResponse({ error: "Bad table id" }, 400);
+
+  let body;
+  try {
+    body = await context.request.json();
+  } catch {
+    return jsonResponse({ error: "Bad JSON" }, 400);
+  }
+
+  const walletAddress = normalizeAddress(body.walletAddress);
+  const table = await readPokerTable(context, tableId);
+  if (!table) return jsonResponse({ error: "Table not found" }, 404);
+  if (!table.simulation) return jsonResponse({ error: "This table is not in bot simulation mode" }, 400);
+  if (!walletAddress || !isTablePlayer(table, walletAddress) || isBot(table, walletAddress)) {
+    return jsonResponse({ error: "Only the human player can control this bot test table" }, 403);
+  }
+
+  const action = String(body.action || "").toLowerCase();
+  if (table.stage === "confirming" && action === "confirm") {
+    table.stage = "preflop";
+    table.status = "playing";
+    table.turn = walletAddress;
+    table.pot = table.pot || "0";
+  } else if (ACTIVE_SIM_STAGES.includes(table.stage) && sameAddress(table.turn, walletAddress)) {
+    try {
+      applySimulationAction(table, walletAddress, action, body.amount);
+    } catch (error) {
+      return jsonResponse({ error: error.message || "Bad simulation action" }, 400);
+    }
+  } else {
+    return jsonResponse({ error: "Not your turn" }, 400);
+  }
+
+  table.updatedAt = new Date().toISOString();
+  await writePokerTable(context, table);
+  return jsonResponse({ ok: true, table: publicTable(table, walletAddress) });
 }
 
 function clientConfig(context) {
@@ -311,7 +443,7 @@ function chatKv(context) {
 async function readLobby(context) {
   const kv = chatKv(context);
   const lobby = kv ? await kv.get("poker:lobby", "json") : null;
-  return lobby && typeof lobby === "object" ? lobby : { waitingTableId: "" };
+  return normalizeLobby(lobby);
 }
 
 async function writeLobby(context, lobby) {
@@ -341,6 +473,11 @@ function createPokerTable(walletAddress) {
     player1: walletAddress,
     player2: "",
     stake: "0.0001",
+    pot: "0",
+    turn: "",
+    simulation: false,
+    bots: {},
+    playerLabels: {},
     winner: "",
     deck: shuffleDeck(`${id}:${now}`),
     playerCards: {},
@@ -348,6 +485,12 @@ function createPokerTable(walletAddress) {
     createdAt: now,
     updatedAt: now
   };
+}
+
+function markBotTable(table, bot) {
+  table.simulation = true;
+  table.bots = { ...(table.bots || {}), [normalizeAddress(bot.address)]: true };
+  table.playerLabels = { ...(table.playerLabels || {}), [normalizeAddress(bot.address)]: bot.name };
 }
 
 function dealTableCards(table) {
@@ -371,6 +514,11 @@ function publicTable(table, viewer) {
     player1: table.player1 || "",
     player2: table.player2 || "",
     stake: table.stake || "0.0001",
+    pot: table.pot || "0",
+    turn: table.turn || "",
+    simulation: Boolean(table.simulation),
+    bots: table.bots || {},
+    playerLabels: table.playerLabels || {},
     winner: table.winner || "",
     playerCards,
     communityCards: visibleCommunity,
@@ -378,6 +526,135 @@ function publicTable(table, viewer) {
     updatedAt: table.updatedAt,
     prototypeNotice: "Card dealing is off-chain in this prototype and not fully trustless yet."
   };
+}
+
+const ACTIVE_SIM_STAGES = ["preflop", "flop", "turn", "river"];
+
+function applySimulationAction(table, walletAddress, action, amount) {
+  if (action === "fold") {
+    table.winner = botOpponent(table, walletAddress);
+    table.stage = "finished";
+    table.status = "finished";
+    table.turn = "";
+    return;
+  }
+
+  if (action === "bet") {
+    table.pot = addEthStrings(table.pot, amount);
+    table.pot = addEthStrings(table.pot, amount);
+    advanceSimulationStage(table, walletAddress);
+    return;
+  }
+
+  if (action === "check" || action === "call") {
+    advanceSimulationStage(table, walletAddress);
+    return;
+  }
+
+  throw new Error("Unknown simulation action");
+}
+
+function advanceSimulationStage(table, walletAddress) {
+  const current = normalizeStage(table.stage);
+  if (current === "preflop") table.stage = "flop";
+  else if (current === "flop") table.stage = "turn";
+  else if (current === "turn") table.stage = "river";
+  else {
+    table.stage = "finished";
+    table.status = "finished";
+    table.winner = pickWinner(table);
+    table.turn = "";
+    return;
+  }
+  table.status = "playing";
+  table.turn = walletAddress;
+}
+
+function addEthStrings(current, amount) {
+  const sum = Number(current || 0) + Number(amount || 0);
+  if (!Number.isFinite(sum) || sum < 0) return String(current || "0");
+  return sum.toFixed(8).replace(/0+$/, "").replace(/\.$/, "") || "0";
+}
+
+function botOpponent(table, walletAddress) {
+  const p1 = normalizeAddress(table.player1);
+  const p2 = normalizeAddress(table.player2);
+  return sameAddress(walletAddress, p1) ? p2 : p1;
+}
+
+function isTablePlayer(table, walletAddress) {
+  return sameAddress(table.player1, walletAddress) || sameAddress(table.player2, walletAddress);
+}
+
+function isBot(table, walletAddress) {
+  return Boolean(table.bots?.[normalizeAddress(walletAddress)]);
+}
+
+function sameAddress(a, b) {
+  return Boolean(a && b && normalizeAddress(a) === normalizeAddress(b));
+}
+
+function createBot() {
+  const names = ["Bot Alpha", "Bot Bravo", "Bot Charlie", "Bot Delta", "Bot Echo"];
+  const address = randomBotAddress();
+  return {
+    id: `bot-${address.slice(2, 10)}`,
+    name: names[hashSeed(address) % names.length],
+    address
+  };
+}
+
+function randomBotAddress() {
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  bytes[0] = 0xb0;
+  return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function normalizeLobby(lobby) {
+  const value = lobby && typeof lobby === "object" ? lobby : {};
+  const tableIds = Array.isArray(value.tableIds)
+    ? value.tableIds.map(normalizeTableId).filter(Boolean).slice(-100)
+    : [];
+  return {
+    waitingTableId: normalizeTableId(value.waitingTableId) || "",
+    tableIds
+  };
+}
+
+function trackTable(lobby, tableId) {
+  const id = normalizeTableId(tableId);
+  if (!id) return;
+  lobby.tableIds = Array.isArray(lobby.tableIds) ? lobby.tableIds : [];
+  lobby.tableIds = [...new Set([...lobby.tableIds, id])].slice(-100);
+}
+
+function adminTableSummary(table) {
+  return {
+    id: table.id,
+    status: table.status,
+    stage: table.stage,
+    player1: table.player1 || "",
+    player2: table.player2 || "",
+    simulation: Boolean(table.simulation),
+    updatedAt: table.updatedAt
+  };
+}
+
+function requireAdmin(context) {
+  const expected = String(context.env.ADMIN_TOKEN || "");
+  if (!expected) {
+    return { ok: false, response: jsonResponse({ error: "Admin panel is disabled. Set ADMIN_TOKEN in environment variables." }, 503) };
+  }
+
+  const header = context.request.headers.get("authorization") || "";
+  const bearer = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+  const token = bearer || context.request.headers.get("x-admin-token") || "";
+  if (token !== expected) {
+    return { ok: false, response: jsonResponse({ error: "Unauthorized" }, 401) };
+  }
+
+  return { ok: true };
 }
 
 function communityForStage(cards, stage) {

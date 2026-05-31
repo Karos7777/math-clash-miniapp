@@ -61,6 +61,7 @@ FARCASTER_NOINDEX=true
 GAME_CONTRACT_ADDRESS=0x...
 DEFAULT_STAKE_ETH=0.0001
 DEFAULT_BET_ETH=0.00001
+ADMIN_TOKEN=generate-a-long-random-secret
 ```
 
 KV:
@@ -70,6 +71,18 @@ CHAT_KV
 ```
 
 `CHAT_KV` is used for lobby/table state and table chat.
+
+## Admin Bot Testing
+
+Open:
+
+```text
+https://poker.karos.dpdns.org/#/admin
+```
+
+The admin panel is protected by the server-side `ADMIN_TOKEN`. The token is checked in Cloudflare Functions or the local Node server and must not be committed to GitHub.
+
+Admin bot tables are off-chain simulation tables. Bots do not send blockchain transactions and cannot test real contract settlement. Use them only to check table UX, chat, cards, turn flow, and mobile layout.
 
 ## Local Run
 
