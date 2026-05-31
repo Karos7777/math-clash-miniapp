@@ -19,6 +19,8 @@ function main() {
 
   assert(storage.info().provider.includes("json"), "storage provider available");
   assert(state.matches && state.players && state.xpEvents, "default state has required collections");
+  assert(state.pokerLobby && typeof state.pokerLobby === "object", "default state has poker lobby");
+  assert(state.pokerTables && typeof state.pokerTables === "object", "default state has poker tables");
   assert(state.chatMessages && typeof state.chatMessages === "object", "default state has persistent chat collection");
   assert(state.socialTasks.share_result, "default social tasks are seeded");
 
@@ -39,11 +41,26 @@ function main() {
     text: "hi",
     createdAt: now
   };
+  state.pokerLobby.waitingTableId = "0x" + "1".repeat(64);
+  state.pokerTables[state.pokerLobby.waitingTableId] = {
+    id: state.pokerLobby.waitingTableId,
+    status: "waiting",
+    stage: "waiting",
+    player1: "0x0000000000000000000000000000000000000abc",
+    player2: "",
+    stake: "0.0001",
+    createdAt: now,
+    updatedAt: now
+  };
   storage.saveState(state);
 
   const reloaded = normalizeState(storage.loadState());
   assert(reloaded.players["wallet:0xabc"].xp === 10, "player persists after reload");
   assert(reloaded.chatMessages.chat_test.text === "hi", "chat message persists after reload");
+  assert(
+    reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].stage === "waiting",
+    "poker table state persists after reload"
+  );
   assert(reloaded.socialTasks.invite_friend.xpReward === 50, "social task data persists");
 
   fs.rmSync(dir, { recursive: true, force: true });

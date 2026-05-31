@@ -31,19 +31,18 @@ async function main() {
   }
 
   const feeRecipient = requireAddress("FEE_RECIPIENT_ADDRESS", deployer.address);
-  const handAnte = parseEthEnv("LOW_LIMIT_ANTE_ETH", "0.00001");
-  const minBuyIn = parseEthEnv("LOW_LIMIT_BUY_IN_ETH", "0.0001");
+  const defaultStake = parseEthEnv("DEFAULT_STAKE_ETH", process.env.LOW_LIMIT_BUY_IN_ETH || "0.0001");
 
   console.log("Network: Base Sepolia");
   console.log("Deployer:", deployer.address);
   console.log("Fee recipient:", feeRecipient);
-  console.log("Low limit ante:", hre.ethers.formatEther(handAnte), "ETH");
-  console.log("Low limit buy-in:", hre.ethers.formatEther(minBuyIn), "ETH");
-  console.log("Hand fee:", "2%");
-  console.log("Game type: two-player on-chain poker table");
+  console.log("Default stake:", hre.ethers.formatEther(defaultStake), "ETH");
+  console.log("Action timeout:", "60 seconds");
+  console.log("Fee:", "2%");
+  console.log("Game type: two-player testnet poker MVP");
 
   const Escrow = await hre.ethers.getContractFactory("Escrow");
-  const escrow = await Escrow.deploy(feeRecipient, handAnte, minBuyIn);
+  const escrow = await Escrow.deploy(feeRecipient, defaultStake);
   await escrow.waitForDeployment();
 
   const address = await escrow.getAddress();
@@ -51,7 +50,7 @@ async function main() {
   console.log("Poker table deployed:", address);
   console.log("Explorer:", `https://sepolia-explorer.base.org/address/${address}`);
   console.log("");
-  console.log("Set this in Render Environment Variables:");
+  console.log("Set this in Cloudflare Pages Environment Variables:");
   console.log(`GAME_CONTRACT_ADDRESS=${address}`);
   console.log("");
   console.log("Or for local public/config.js:");

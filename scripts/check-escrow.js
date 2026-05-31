@@ -8,23 +8,17 @@ const ABI = [
   "function owner() view returns (address)",
   "function feeRecipient() view returns (address)",
   "function paused() view returns (bool)",
-  "function gameState() view returns (uint8)",
-  "function MAX_SEATS() view returns (uint8)",
-  "function seatCount() view returns (uint8)",
-  "function getSeats() view returns (address[6])",
-  "function handAnte() view returns (uint256)",
-  "function minBuyIn() view returns (uint256)",
+  "function defaultStake() view returns (uint256)",
   "function ACTION_TIMEOUT() view returns (uint256)",
   "function DEVELOPER_FEE_BPS() view returns (uint256)",
-  "function getPlayers() view returns (address,address)",
-  "function roundNumber() view returns (uint256)",
-  "function roundPot() view returns (uint256)"
+  "function pendingWithdrawals(address) view returns (uint256)",
+  "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,address winner,bool refunded))"
 ];
 
 const DEFAULT_RPC = "https://sepolia.base.org";
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const EXPECTED_DEVELOPER_FEE_BPS = 200n;
-const EXPECTED_TIMEOUT = 300n;
+const EXPECTED_TIMEOUT = 60n;
 
 function readPublicConfigAddress() {
   const configPath = path.join(__dirname, "..", "public", "config.js");
@@ -64,20 +58,19 @@ async function main() {
   }
 
   const requiredSelectors = [
-    "joinGame()",
-    "joinSeat(uint8)",
-    "topUpStack()",
-    "payAnte()",
-    "commitNumber(bytes32)",
-    "bet(uint256)",
-    "call()",
-    "raiseBet(uint256)",
-    "check()",
-    "fold()",
-    "reveal(uint8,bytes32)",
-    "cashOutStack()",
+    "joinTable(bytes32)",
+    "confirm(bytes32)",
+    "check(bytes32)",
+    "bet(bytes32)",
+    "call(bytes32)",
+    "fold(bytes32)",
+    "timeout(bytes32)",
+    "submitResult(bytes32,address)",
+    "resolveDispute(bytes32,address)",
     "claimWinnings()",
-    "timeout()",
+    "getTable(bytes32)",
+    "pendingWithdrawals(address)",
+    "defaultStake()",
     "pause()",
     "unpause()"
   ];
@@ -95,55 +88,39 @@ async function main() {
   const owner = await table.owner();
   const feeRecipient = await table.feeRecipient();
   const paused = await table.paused();
-  const gameState = await table.gameState();
-  const maxSeats = await table.MAX_SEATS();
-  const seatCount = await table.seatCount();
-  const seats = await table.getSeats();
-  const handAnte = await table.handAnte();
-  const minBuyIn = await table.minBuyIn();
+  const defaultStake = await table.defaultStake();
   const timeout = await table.ACTION_TIMEOUT();
   const feeBps = await table.DEVELOPER_FEE_BPS();
-  const [player1, player2] = await table.getPlayers();
-  const roundNumber = await table.roundNumber();
-  const roundPot = await table.roundPot();
+  const zeroTableResult = await table.getTable(ethers.ZeroHash);
+  const zeroTable = zeroTableResult.exists === undefined && zeroTableResult[0] ? zeroTableResult[0] : zeroTableResult;
 
   console.log("");
-  console.log("Poker table:", contractAddress);
+  console.log("Poker Clash escrow:", contractAddress);
   console.log("Owner:", owner);
   console.log("Fee recipient:", feeRecipient);
   console.log("Paused:", paused);
-  console.log("State:", gameState.toString());
-  console.log("Max seats:", maxSeats.toString());
-  console.log("Seat count:", seatCount.toString());
-  console.log("Seats:", seats.join(", "));
-  console.log("Hand ante:", handAnte.toString());
-  console.log("Min buy-in:", minBuyIn.toString());
+  console.log("Default stake:", ethers.formatEther(defaultStake), "ETH");
   console.log("Timeout seconds:", timeout.toString());
   console.log("Developer fee bps:", feeBps.toString());
-  console.log("Player 1:", player1);
-  console.log("Player 2:", player2);
-  console.log("Hand:", roundNumber.toString());
-  console.log("Pot:", roundPot.toString());
+  console.log("Zero table exists:", zeroTable.exists);
   console.log("");
 
   statusLine("public/config.js address", sameAddress(contractAddress, publicAddress), publicAddress || "not set");
-  statusLine("developer fee is 2% per hand", BigInt(feeBps) === EXPECTED_DEVELOPER_FEE_BPS, feeBps.toString());
-  statusLine("action timeout is 5 minutes", BigInt(timeout) === EXPECTED_TIMEOUT, timeout.toString());
-  statusLine("table has 6 seats", Number(maxSeats) === 6, maxSeats.toString());
-  statusLine("min buy-in covers at least 2 antes", BigInt(minBuyIn) >= BigInt(handAnte) * 2n, minBuyIn.toString());
+  statusLine("developer fee is 2%", BigInt(feeBps) === EXPECTED_DEVELOPER_FEE_BPS, feeBps.toString());
+  statusLine("action timeout is 60 seconds", BigInt(timeout) === EXPECTED_TIMEOUT, timeout.toString());
+  statusLine("default stake is set", BigInt(defaultStake) > 0n, defaultStake.toString());
 
   if (
     selectorResults.some((item) => !item.found) ||
     BigInt(feeBps) !== EXPECTED_DEVELOPER_FEE_BPS ||
     BigInt(timeout) !== EXPECTED_TIMEOUT ||
-    Number(maxSeats) !== 6 ||
-    BigInt(minBuyIn) < BigInt(handAnte) * 2n
+    BigInt(defaultStake) <= 0n
   ) {
-    throw new Error("Poker table check failed. Confirm this address was deployed from contracts/Escrow.sol");
+    throw new Error("Poker Clash escrow check failed. Confirm this address was deployed from contracts/Escrow.sol");
   }
 
   console.log("");
-  console.log("On-chain poker table check passed.");
+  console.log("Poker Clash escrow check passed.");
 }
 
 main().catch((error) => {

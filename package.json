@@ -2,7 +2,7 @@
   "name": "math-clash-farcaster-miniapp",
   "version": "0.1.0",
   "private": true,
-  "description": "Farcaster Mini App for a 1v1 on-chain ETH poker table.",
+  "description": "Farcaster Mini App testnet MVP for a 1v1 Base Sepolia poker table.",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",

@@ -6,7 +6,7 @@ window.MATH_CLASH_CONFIG = {
   defaultStakeEth: "0.0001",
   defaultBetEth: "0.00001",
   developerFeeBps: 200,
-  maxSeats: 6,
+  maxSeats: 2,
   chain: {
     id: 84532,
     hex: "0x14a34",

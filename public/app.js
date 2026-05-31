@@ -17,16 +17,34 @@ const CONFIG = {
 };
 
 const CONTRACT_ADDRESS = CONFIG.gameContractAddress || CONFIG.escrowAddress || "";
-const MAX_SEATS = 6;
-const TABLE_STATES = [
-  "WAITING",
-  "HAND_ANTE",
-  "HAND_COMMIT",
-  "HAND_BET",
-  "HAND_REVEAL",
-  "HAND_SETTLED",
-  "TABLE_CLOSED"
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const STAGES = ["waiting", "confirming", "preflop", "flop", "turn", "river", "showdown", "finished"];
+const ACTIVE_STAGES = new Set(["preflop", "flop", "turn", "river"]);
+const CONTRACT_ABI = [
+  "function joinTable(bytes32 tableId) payable",
+  "function confirm(bytes32 tableId)",
+  "function check(bytes32 tableId)",
+  "function bet(bytes32 tableId) payable",
+  "function call(bytes32 tableId) payable",
+  "function fold(bytes32 tableId)",
+  "function timeout(bytes32 tableId)",
+  "function submitResult(bytes32 tableId,address winner)",
+  "function claimWinnings()",
+  "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,address winner,bool refunded))",
+  "function pendingWithdrawals(address) view returns (uint256)",
+  "function defaultStake() view returns (uint256)",
+  "event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake)",
+  "event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot)",
+  "event PlayerConfirmed(bytes32 indexed tableId, address indexed player)",
+  "event StageChanged(bytes32 indexed tableId, uint8 stage, address turn, uint256 actionDeadline)",
+  "event PlayerChecked(bytes32 indexed tableId, address indexed player)",
+  "event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount)",
+  "event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount)",
+  "event PlayerFolded(bytes32 indexed tableId, address indexed player, address indexed winner)",
+  "event PlayerTimedOut(bytes32 indexed tableId, address indexed inactivePlayer, address indexed winner)",
+  "event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee)"
 ];
+
 const BASE_CHAIN = {
   id: Number(CONFIG.chain?.id || 84532),
   hex: CONFIG.chain?.hex || `0x${Number(CONFIG.chain?.id || 84532).toString(16)}`,
@@ -35,55 +53,6 @@ const BASE_CHAIN = {
   explorerUrl: CONFIG.chain?.explorerUrl || "https://sepolia-explorer.base.org"
 };
 
-const CONTRACT_ABI = [
-  "function joinGame() payable",
-  "function joinSeat(uint8 seat) payable",
-  "function topUpStack() payable",
-  "function payAnte() payable",
-  "function commitNumber(bytes32 commitHash)",
-  "function check()",
-  "function bet(uint256 amount) payable",
-  "function call() payable",
-  "function raiseBet(uint256 amount) payable",
-  "function fold()",
-  "function reveal(uint8 number, bytes32 salt)",
-  "function timeout()",
-  "function cashOutStack()",
-  "function claimWinnings()",
-  "function gameState() view returns (uint8)",
-  "function getSeats() view returns (address[6])",
-  "function seatCount() view returns (uint8)",
-  "function stacks(address) view returns (uint256)",
-  "function pendingWithdrawals(address) view returns (uint256)",
-  "function handAnte() view returns (uint256)",
-  "function minBuyIn() view returns (uint256)",
-  "function roundNumber() view returns (uint256)",
-  "function roundPot() view returns (uint256)",
-  "function currentBet() view returns (uint256)",
-  "function currentActorSeat() view returns (uint8)",
-  "function timeoutAt() view returns (uint256)",
-  "function hasPaidAnte(address) view returns (bool)",
-  "function isActiveInHand(address) view returns (bool)",
-  "function hasCommitted(address) view returns (bool)",
-  "function hasRevealed(address) view returns (bool)",
-  "function hasFolded(address) view returns (bool)",
-  "function handContribution(address) view returns (uint256)",
-  "function revealedNumbers(address) view returns (uint8)",
-  "function DEVELOPER_FEE_BPS() view returns (uint256)",
-  "event PlayerJoined(address indexed player, uint8 indexed seat, uint256 buyIn)",
-  "event HandStarted(uint256 indexed handNumber, uint256 handPot)",
-  "event AntePaid(address indexed player, uint256 amount, uint8 activePlayers)",
-  "event PlayerBet(address indexed player, uint256 amount)",
-  "event PlayerCalled(address indexed player, uint256 amount)",
-  "event PlayerRaised(address indexed player, uint256 amount, uint256 newCurrentBet)",
-  "event PlayerFolded(address indexed player)",
-  "event PlayerChecked(address indexed player)",
-  "event HandSettled(uint256 indexed handNumber, address indexed winner, uint256 grossPot, uint256 playerPayout, uint256 developerFee)",
-  "event PayoutSent(address indexed to, uint256 amount)",
-  "event PayoutCredited(address indexed to, uint256 amount)",
-  "event StacksUpdated(address[6] seats, uint256[6] stacks)"
-];
-
 const state = {
   sdk: null,
   provider: null,
@@ -91,130 +60,92 @@ const state = {
   account: "",
   readContract: null,
   writeContract: null,
-  tableSelected: localStorage.getItem("poker-clash:selected-table") === "low-6max",
-  selectedSeat: normalizeSeatIndex(localStorage.getItem("poker-clash:selected-seat")),
-  table: null,
+  tableId: "",
+  offchainTable: null,
+  chainTable: null,
+  pendingClaim: 0n,
   busy: false,
   pollId: null,
-  chatPollId: null,
-  eventsAttached: false,
-  history: []
+  timerId: null,
+  eventsAttached: false
 };
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
-  chooseTableButton: $("#chooseTableButton"),
   saveMiniApp: $("#saveMiniApp"),
   shareMiniApp: $("#shareMiniApp"),
   connectWallet: $("#connectWallet"),
-  phaseLabel: $("#phaseLabel"),
-  roundPot: $("#roundPot"),
-  potMark: $("#potMark"),
-  timeoutLabel: $("#timeoutLabel"),
-  statusLine: $("#statusLine"),
-  actionTitle: $("#actionTitle"),
-  stakeInput: $("#stakeInput"),
-  joinButton: $("#joinButton"),
-  topUpButton: $("#topUpButton"),
-  payAnteButton: $("#payAnteButton"),
-  numberSelect: $("#numberSelect"),
-  commitButton: $("#commitButton"),
+  lobbyScreen: $("#lobbyScreen"),
+  tableScreen: $("#tableScreen"),
+  startGameButton: $("#startGameButton"),
+  lobbyStatus: $("#lobbyStatus"),
+  lobbyStake: $("#lobbyStake"),
+  lobbyNetwork: $("#lobbyNetwork"),
+  lobbyContract: $("#lobbyContract"),
+  lobbyLastChat: $("#lobbyLastChat"),
+  lobbyChatForm: $("#lobbyChatForm"),
+  lobbyChatInput: $("#lobbyChatInput"),
+  backToLobbyButton: $("#backToLobbyButton"),
+  tableIdLabel: $("#tableIdLabel"),
+  timerLabel: $("#timerLabel"),
+  player1Label: $("#player1Label"),
+  player2Label: $("#player2Label"),
+  potLabel: $("#potLabel"),
+  stakeLabel: $("#stakeLabel"),
+  stageLabel: $("#stageLabel"),
+  turnLabel: $("#turnLabel"),
+  communityCards: $("#communityCards"),
+  playerCards: $("#playerCards"),
+  confirmButton: $("#confirmButton"),
+  checkButton: $("#checkButton"),
+  betField: $("#betField"),
   betInput: $("#betInput"),
   betButton: $("#betButton"),
-  checkButton: $("#checkButton"),
   callButton: $("#callButton"),
-  raiseButton: $("#raiseButton"),
   foldButton: $("#foldButton"),
-  revealButton: $("#revealButton"),
   timeoutButton: $("#timeoutButton"),
-  cashOutButton: $("#cashOutButton"),
+  settleButton: $("#settleButton"),
   claimButton: $("#claimButton"),
-  refreshButton: $("#refreshButton"),
-  seatGrid: $("#seatGrid"),
-  player1Name: $("#player1Name"),
-  player2Name: $("#player2Name"),
-  player1Stack: $("#player1Stack"),
-  player2Stack: $("#player2Stack"),
-  contractAddress: $("#contractAddress"),
-  currentBet: $("#currentBet"),
-  commitInfo: $("#commitInfo"),
-  pendingWithdrawal: $("#pendingWithdrawal"),
-  roundNumber: $("#roundNumber"),
-  maxRounds: $("#maxRounds"),
-  roundAnte: $("#roundAnte"),
-  feeBps: $("#feeBps"),
-  stackChart: $("#stackChart"),
-  eventLog: $("#eventLog"),
-  lobbyLastChat: $("#lobbyLastChat"),
+  tableStatus: $("#tableStatus"),
   tableLastChat: $("#tableLastChat"),
-  lobbyChatForm: $("#lobbyChatForm"),
   tableChatForm: $("#tableChatForm"),
-  lobbyChatInput: $("#lobbyChatInput"),
   tableChatInput: $("#tableChatInput")
 };
-elements.stakeField = elements.stakeInput.closest("label");
-elements.numberField = elements.numberSelect.closest("label");
-elements.betField = elements.betInput.closest("label");
 
-boot().catch(showFatalError);
+boot().catch((error) => showError(error.message || "App failed to start."));
 
 async function boot() {
-  elements.stakeInput.value = CONFIG.defaultStakeEth || "0.0001";
+  elements.lobbyStake.textContent = `${CONFIG.defaultStakeEth || "0.0001"} ETH`;
+  elements.lobbyNetwork.textContent = BASE_CHAIN.name;
+  elements.lobbyContract.textContent = isAddress(CONTRACT_ADDRESS) ? shortAddress(CONTRACT_ADDRESS) : "Not configured";
   elements.betInput.value = CONFIG.defaultBetEth || "0.00001";
-  renderNumberOptions();
   bindEvents();
-  renderTableChoice();
+  renderRoute();
   initMiniApp().catch((error) => console.info("Mini App init skipped:", error.message));
   await initReadContract();
-  await refreshTable();
-  await refreshChats();
+  refreshWalletFromProvider().catch(() => {});
   startPolling();
 }
 
 function bindEvents() {
-  elements.chooseTableButton.addEventListener("click", chooseTable);
+  window.addEventListener("hashchange", renderRoute);
   elements.connectWallet.addEventListener("click", connectWallet);
+  elements.startGameButton.addEventListener("click", startGame);
+  elements.backToLobbyButton.addEventListener("click", () => {
+    window.location.hash = "";
+  });
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
-  elements.refreshButton.addEventListener("click", refreshTable);
-  elements.joinButton.addEventListener("click", findTable);
-  elements.topUpButton.addEventListener("click", topUpStack);
-  elements.payAnteButton.addEventListener("click", payAnte);
-  elements.commitButton.addEventListener("click", commitNumber);
+  elements.confirmButton.addEventListener("click", confirmOrJoin);
+  elements.checkButton.addEventListener("click", () => sendTableTx("check", () => state.writeContract.check(tableIdBytes())));
   elements.betButton.addEventListener("click", bet);
-  elements.checkButton.addEventListener("click", () => sendAction("check", "Checking..."));
   elements.callButton.addEventListener("click", callBet);
-  elements.raiseButton.addEventListener("click", raiseBet);
-  elements.foldButton.addEventListener("click", () => sendAction("fold", "Folding hand..."));
-  elements.revealButton.addEventListener("click", reveal);
-  elements.timeoutButton.addEventListener("click", () => sendAction("timeout", "Claiming timeout..."));
-  elements.cashOutButton.addEventListener("click", () => sendAction("cashOutStack", "Cashing out table stack..."));
-  elements.claimButton.addEventListener("click", () => sendAction("claimWinnings", "Claiming fallback payout..."));
-  elements.lobbyChatForm.addEventListener("submit", (event) => sendChat(event, "lobby"));
-  elements.tableChatForm.addEventListener("submit", (event) => sendChat(event, "table"));
-}
-
-function chooseTable() {
-  state.tableSelected = true;
-  localStorage.setItem("poker-clash:selected-table", "low-6max");
-  renderTableChoice();
-  setStatus("Low Limit 6-Max table entered. Choose an open seat.");
-  if (state.table) renderTable();
-  refreshControls();
-}
-
-function renderTableChoice() {
-  elements.chooseTableButton.textContent = state.tableSelected ? "Low Limit table entered" : "Enter 6-seat table";
-}
-
-function renderNumberOptions() {
-  elements.numberSelect.innerHTML = "";
-  for (let number = 1; number <= 10; number += 1) {
-    const option = document.createElement("option");
-    option.value = String(number);
-    option.textContent = String(number);
-    elements.numberSelect.append(option);
-  }
+  elements.foldButton.addEventListener("click", () => sendTableTx("fold", () => state.writeContract.fold(tableIdBytes())));
+  elements.timeoutButton.addEventListener("click", () => sendTableTx("timeout", () => state.writeContract.timeout(tableIdBytes())));
+  elements.settleButton.addEventListener("click", settleShowdown);
+  elements.claimButton.addEventListener("click", () => sendTableTx("claim", () => state.writeContract.claimWinnings()));
+  elements.lobbyChatForm.addEventListener("submit", sendLobbyChat);
+  elements.tableChatForm.addEventListener("submit", sendTableChat);
 }
 
 async function initMiniApp() {
@@ -222,76 +153,56 @@ async function initMiniApp() {
     const module = await import("https://esm.sh/@farcaster/miniapp-sdk");
     state.sdk = module.sdk;
     await state.sdk.actions.ready();
-    refreshMiniAppActions();
+    elements.saveMiniApp.hidden = typeof state.sdk.actions?.addMiniApp !== "function";
+    elements.shareMiniApp.hidden = typeof state.sdk.actions?.composeCast !== "function";
   } catch (error) {
     console.info("Farcaster SDK unavailable:", error.message);
   }
 }
 
-function refreshMiniAppActions() {
-  const actions = state.sdk?.actions || {};
-  elements.saveMiniApp.hidden = typeof actions.addMiniApp !== "function";
-  elements.shareMiniApp.hidden = typeof actions.composeCast !== "function";
-}
-
-async function saveMiniApp() {
-  try {
-    if (typeof state.sdk?.actions?.addMiniApp !== "function") {
-      setStatus("Open in Farcaster to save this Mini App.");
-      return;
-    }
-    await state.sdk.actions.addMiniApp();
-    setStatus("Mini App saved.");
-  } catch (error) {
-    setStatus(error.message || "Could not save Mini App.");
-  }
-}
-
-async function shareMiniApp() {
-  try {
-    if (typeof state.sdk?.actions?.composeCast !== "function") {
-      setStatus("Open in Farcaster to share this Mini App.");
-      return;
-    }
-    await state.sdk.actions.composeCast({
-      text: `I am waiting at the ${CONFIG.appName} low-limit 6-max table.`,
-      embeds: [CONFIG.appUrl || window.location.origin]
-    });
-  } catch (error) {
-    setStatus(error.message || "Could not share Mini App.");
-  }
-}
-
 async function initReadContract() {
-  elements.contractAddress.textContent = isAddress(CONTRACT_ADDRESS)
-    ? shortAddress(CONTRACT_ADDRESS)
-    : "Preview mode";
-
   if (!isAddress(CONTRACT_ADDRESS)) {
-    setStatus("Table preview is open. Real buy-ins turn on after the table contract is connected.");
-    refreshControls();
+    setLobbyStatus("Contract not configured yet.");
+    renderControls();
     return;
   }
 
   const { Contract, JsonRpcProvider } = await getEthers();
   const provider = new JsonRpcProvider(BASE_CHAIN.rpcUrl, BASE_CHAIN.id);
   state.readContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
-  attachContractEvents();
+  attachEvents();
+}
+
+function renderRoute() {
+  const tableId = currentRouteTableId();
+  state.tableId = tableId;
+  document.body.classList.toggle("table-route", Boolean(tableId));
+  elements.lobbyScreen.hidden = Boolean(tableId);
+  elements.tableScreen.hidden = !tableId;
+
+  if (tableId) {
+    elements.tableIdLabel.textContent = shortTableId(tableId);
+    refreshTable();
+  } else {
+    state.tableId = "";
+    state.offchainTable = null;
+    state.chainTable = null;
+    refreshLobbyChat();
+    renderControls();
+  }
 }
 
 async function connectWallet() {
   try {
     state.provider = await getWalletProvider();
     if (!state.provider?.request) {
-      setStatus("Open in Farcaster/Base app or a browser with Rabby/Coinbase Wallet.");
+      setLobbyStatus("Open in Farcaster/Base app or a browser with Rabby/Coinbase Wallet.");
       return;
     }
 
     const accounts = await requestAccounts(state.provider);
     state.account = accounts[0];
-    localStorage.setItem("poker-clash:last-wallet", state.account);
     elements.connectWallet.textContent = shortAddress(state.account);
-
     await ensureBaseChain(state.provider);
 
     if (isAddress(CONTRACT_ADDRESS)) {
@@ -301,11 +212,29 @@ async function connectWallet() {
       state.writeContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
     }
 
-    setStatus("Wallet connected.");
-    await refreshTable();
+    setLobbyStatus("Wallet connected.");
+    renderControls();
+    if (state.tableId) await refreshTable();
   } catch (error) {
-    setStatus(getWalletError(error, "Wallet connection failed."));
+    showError(walletError(error, "Wallet connection failed."));
   }
+}
+
+async function refreshWalletFromProvider() {
+  const provider = await getWalletProvider();
+  const accounts = provider?.request ? await provider.request({ method: "eth_accounts" }).catch(() => []) : [];
+  if (accounts?.length) {
+    state.provider = provider;
+    state.account = accounts[0];
+    elements.connectWallet.textContent = shortAddress(state.account);
+    if (isAddress(CONTRACT_ADDRESS)) {
+      const { BrowserProvider, Contract } = await getEthers();
+      const browserProvider = new BrowserProvider(state.provider);
+      const signer = await browserProvider.getSigner();
+      state.writeContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    }
+  }
+  renderControls();
 }
 
 async function getWalletProvider() {
@@ -339,614 +268,233 @@ async function requestAccounts(provider) {
   return accounts;
 }
 
-function withTimeout(promise, timeoutMs) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      window.setTimeout(() => reject(new Error("Wallet provider timed out")), timeoutMs);
-    })
-  ]);
-}
-
-async function findTable() {
-  if (!state.tableSelected) {
-    chooseTable();
-    return;
-  }
-  if (!isSelectedSeatOpen()) {
-    setStatus("Choose an open seat first.");
+async function startGame() {
+  if (!state.account) {
+    setLobbyStatus("Wallet not connected.");
     return;
   }
 
-  await ensureWallet();
-  const seat = state.selectedSeat;
-  const value = parseEthInput(elements.stakeInput.value);
-  await sendTx(`Taking seat ${seat + 1} at the low-limit 6-max table...`, () =>
-    state.writeContract.joinSeat(seat, { value })
-  );
-}
-
-async function topUpStack() {
-  await ensureWallet();
-  const value = parseEthInput(elements.stakeInput.value);
-  await sendTx("Adding ETH to table stack...", () => state.writeContract.topUpStack({ value }));
-}
-
-async function payAnte() {
-  await ensureWallet();
-  const value = state.table?.handAnte || parseEthInput(CONFIG.defaultBetEth || "0.00001");
-  await sendTx("Confirming hand start with ante transaction...", () => state.writeContract.payAnte({ value }));
-}
-
-async function commitNumber() {
-  await ensureWallet();
-  const { hexlify, randomBytes, solidityPackedKeccak256 } = await getEthers();
-  const number = Number(elements.numberSelect.value);
-  const salt = hexlify(randomBytes(32));
-  const commitHash = solidityPackedKeccak256(["uint8", "bytes32"], [number, salt]);
-  saveLocalCommit(number, salt);
-  await sendTx("Submitting hidden hand commit...", () => state.writeContract.commitNumber(commitHash));
-}
-
-async function bet() {
-  await ensureWallet();
-  const value = parseEthInput(elements.betInput.value);
-  await sendTx("Sending ETH bet into the hand pot...", () => state.writeContract.bet(value, { value }));
-}
-
-async function callBet() {
-  const due = callDue();
-  if (due <= 0n) {
-    setStatus("No bet to call.");
-    return;
-  }
-  await sendTx("Calling with matching ETH into the pot...", () => state.writeContract["call"]({ value: due }));
-}
-
-async function raiseBet() {
-  await ensureWallet();
-  const value = parseEthInput(elements.betInput.value);
-  await sendTx("Raising with a new ETH transaction...", () => state.writeContract.raiseBet(value, { value }));
-}
-
-async function reveal() {
-  const commit = getLocalCommit();
-  if (!commit) {
-    setStatus("No local hidden hand found. Commit on this device before revealing.");
-    return;
-  }
-  await sendTx("Revealing hidden hand...", () =>
-    state.writeContract.reveal(Number(commit.number), commit.salt)
-  );
-}
-
-async function sendAction(functionName, message) {
-  await sendTx(message || `Sending ${functionName} transaction...`, () => state.writeContract[functionName]());
-}
-
-async function sendTx(message, buildTx) {
   try {
-    await ensureWallet();
-    state.busy = true;
-    refreshControls();
-    setStatus(message);
-    const tx = await buildTx();
-    setStatus(`Transaction pending: ${shortTx(tx.hash)}...`);
-    await tx.wait();
-    setStatus(`Transaction confirmed: ${shortTx(tx.hash)}.`);
-    await refreshTable();
+    setBusy(true, "Finding table...");
+    const response = await fetch("/api/lobby/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ walletAddress: state.account })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not join lobby.");
+    window.location.hash = `#/table/${data.table.id}`;
   } catch (error) {
-    setStatus(getWalletError(error, "Transaction failed."));
+    showError(error.message || "Lobby unavailable.");
   } finally {
-    state.busy = false;
-    refreshControls();
-  }
-}
-
-async function ensureWallet() {
-  if (!state.tableSelected) {
-    chooseTable();
-  }
-  if (!isAddress(CONTRACT_ADDRESS)) {
-    throw new Error("Set GAME_CONTRACT_ADDRESS first.");
-  }
-  if (!state.writeContract || !state.account) {
-    await connectWallet();
-  }
-  if (!state.writeContract || !state.account) {
-    throw new Error("Connect wallet first.");
+    setBusy(false);
   }
 }
 
 async function refreshTable() {
-  if (!state.readContract) {
-    renderEmpty();
-    return;
-  }
-
-  const [
-    gameState,
-    seats,
-    seatCount,
-    handNumber,
-    handAnte,
-    minBuyIn,
-    handPot,
-    currentBet,
-    currentActorSeat,
-    timeoutAt,
-    feeBps
-  ] = await Promise.all([
-    state.readContract.gameState(),
-    state.readContract.getSeats(),
-    state.readContract.seatCount(),
-    state.readContract.roundNumber(),
-    state.readContract.handAnte(),
-    state.readContract.minBuyIn(),
-    state.readContract.roundPot(),
-    state.readContract.currentBet(),
-    state.readContract.currentActorSeat(),
-    state.readContract.timeoutAt(),
-    state.readContract.DEVELOPER_FEE_BPS()
-  ]);
-
-  const seatDetails = await Promise.all(
-    Array.from(seats).map(async (address, index) => {
-      const occupied = isAddress(address) && address !== zeroAddress();
-      if (!occupied) {
-        return emptySeat(index);
-      }
-      const [stack, paidAnte, active, folded, contribution, committed, revealed, number] = await Promise.all([
-        state.readContract.stacks(address),
-        state.readContract.hasPaidAnte(address),
-        state.readContract.isActiveInHand(address),
-        state.readContract.hasFolded(address),
-        state.readContract.handContribution(address),
-        state.readContract.hasCommitted(address),
-        state.readContract.hasRevealed(address),
-        state.readContract.revealedNumbers(address)
-      ]);
-      return {
-        index,
-        address,
-        occupied,
-        stack,
-        paidAnte,
-        active,
-        folded,
-        contribution,
-        committed,
-        revealed,
-        number: Number(number)
-      };
-    })
-  );
-
-  const mySeat = state.account
-    ? seatDetails.find((seat) => sameAddress(seat.address, state.account))
-    : null;
-  const pending = state.account ? await state.readContract.pendingWithdrawals(state.account) : 0n;
-
-  state.table = {
-    stateId: Number(gameState),
-    phase: TABLE_STATES[Number(gameState)] || "UNKNOWN",
-    seats: seatDetails,
-    seatCount: Number(seatCount),
-    handNumber: Number(handNumber),
-    handAnte,
-    minBuyIn,
-    handPot,
-    currentBet,
-    currentActorSeat: Number(currentActorSeat),
-    timeoutAt: Number(timeoutAt),
-    feeBps: Number(feeBps),
-    mySeat,
-    pending
-  };
-
-  syncSelectedSeat();
-  pushStackHistory(state.table);
+  if (!state.tableId) return;
+  await Promise.all([refreshOffchainTable(), refreshChainTable(), refreshTableChat()]);
+  await syncOffchainWithChain();
   renderTable();
 }
 
-function emptySeat(index) {
-  return {
-    index,
-    address: zeroAddress(),
-    occupied: false,
-    stack: 0n,
-    paidAnte: false,
-    active: false,
-    folded: false,
-    contribution: 0n,
-    committed: false,
-    revealed: false,
-    number: 0
-  };
-}
-
-function renderEmpty() {
-  elements.phaseLabel.textContent = "Lobby";
-  elements.roundPot.textContent = "0 ETH pot";
-  elements.potMark.textContent = "0";
-  elements.timeoutLabel.textContent = "Waiting";
-  elements.actionTitle.textContent = !state.tableSelected
-    ? "Enter table"
-    : normalizeSeatIndex(state.selectedSeat) === -1
-      ? "Pick a chair"
-      : "Ready to sit";
-  renderSeats(Array.from({ length: MAX_SEATS }, (_, index) => emptySeat(index)));
-  refreshControls();
-}
-
-function renderTable() {
-  const table = state.table;
-  elements.phaseLabel.textContent = formatPhase(table.phase);
-  elements.roundPot.textContent = `${formatEth(table.handPot)} pot`;
-  elements.potMark.textContent = formatCompactEth(table.handPot);
-  elements.currentBet.textContent = formatEth(table.currentBet);
-  elements.pendingWithdrawal.textContent = formatEth(table.pending);
-  elements.roundNumber.textContent = String(table.handNumber);
-  elements.maxRounds.textContent = `${table.seatCount}/6`;
-  elements.roundAnte.textContent = formatEth(table.handAnte);
-  elements.feeBps.textContent = `${table.feeBps / 100}%`;
-  elements.timeoutLabel.textContent = table.timeoutAt ? formatTimeout(table.timeoutAt) : "--";
-
-  const occupied = table.seats.filter((seat) => seat.occupied);
-  elements.player1Name.textContent = occupied[0] ? shortAddress(occupied[0].address) : "Open seat";
-  elements.player2Name.textContent = occupied[1] ? shortAddress(occupied[1].address) : "Open seat";
-  elements.player1Stack.textContent = occupied[0] ? formatEth(occupied[0].stack) : "0 ETH";
-  elements.player2Stack.textContent = occupied[1] ? formatEth(occupied[1].stack) : "0 ETH";
-
-  const commit = getLocalCommit();
-  elements.commitInfo.textContent = commit
-    ? `Hidden hand ${commit.number}, salt saved locally`
-    : table.mySeat?.committed
-      ? "Committed on-chain. Reveal needs local salt."
-      : "No hidden hand yet.";
-
-  elements.actionTitle.textContent = getActionTitle(table);
-  renderSeats(table.seats);
-  renderEventLog();
-  renderChart();
-  refreshControls();
-}
-
-function renderSeats(seats) {
-  elements.seatGrid.innerHTML = "";
-  seats.forEach((seat) => {
-    const mine = state.account && sameAddress(seat.address, state.account);
-    const card = document.createElement("div");
-    card.className = [
-      "seat-card",
-      seat.occupied ? "occupied" : "open",
-      seat.active ? "active" : "",
-      seat.folded ? "folded" : "",
-      state.selectedSeat === seat.index && !seat.occupied ? "selected" : "",
-      mine ? "mine" : ""
-    ].filter(Boolean).join(" ");
-    card.dataset.seat = String(seat.index + 1);
-    const label = mine
-      ? "You"
-      : seat.occupied
-        ? shortAddress(seat.address)
-        : state.selectedSeat === seat.index
-          ? "Selected"
-          : "Empty";
-    const detail = seat.occupied
-      ? `${seat.active ? "Playing" : seat.paidAnte ? "Ante paid" : "Waiting"} - ${formatCompactEth(seat.stack)} ETH`
-      : state.selectedSeat === seat.index ? "Ready to sit" : "Sit here";
-    card.innerHTML = `
-      <span class="chair-icon" aria-hidden="true"></span>
-      <strong>${label}</strong>
-      <span>${detail}</span>
-    `;
-    if (!seat.occupied) {
-      card.tabIndex = 0;
-      card.setAttribute("role", "button");
-      card.setAttribute("aria-label", `Choose ${seatPositionName(seat.index)} seat`);
-      card.addEventListener("click", () => selectSeat(seat.index));
-      card.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectSeat(seat.index);
-        }
-      });
-    }
-    elements.seatGrid.append(card);
-  });
-}
-
-function selectSeat(index) {
-  if (!state.tableSelected) {
-    setStatus("Enter the 6-seat table first, then choose a chair.");
-    return;
-  }
-
-  const seatIndex = normalizeSeatIndex(index);
-  if (seatIndex === -1) {
-    setStatus("Choose one of the open chairs.");
-    return;
-  }
-  const seat = state.table?.seats?.[seatIndex];
-  if (seat?.occupied) {
-    setStatus("That chair is already taken. Choose another open chair.");
-    return;
-  }
-
-  state.selectedSeat = seatIndex;
-  localStorage.setItem("poker-clash:selected-seat", String(seatIndex));
-  setStatus("Chair selected. Press Sit here to send the buy-in transaction.");
-  elements.actionTitle.textContent = state.table ? getActionTitle(state.table) : "Ready to sit";
-  renderSeats(state.table?.seats || Array.from({ length: MAX_SEATS }, (_, seat) => emptySeat(seat)));
-  refreshControls();
-}
-
-function syncSelectedSeat() {
-  const seatIndex = normalizeSeatIndex(state.selectedSeat);
-  if (seatIndex === -1) {
-    state.selectedSeat = -1;
-    return;
-  }
-
-  const seat = state.table?.seats?.[seatIndex];
-  if (!seat || (seat.occupied && !sameAddress(seat.address, state.account))) {
-    state.selectedSeat = -1;
-    localStorage.removeItem("poker-clash:selected-seat");
-  }
-}
-
-function isSelectedSeatOpen() {
-  const seatIndex = normalizeSeatIndex(state.selectedSeat);
-  if (!state.tableSelected || seatIndex === -1) return false;
-  const seat = state.table?.seats?.[seatIndex];
-  return seat ? !seat.occupied : true;
-}
-
-function getActionTitle(table) {
-  if (!state.tableSelected) return "Enter table";
-  if (!table.mySeat && !isSelectedSeatOpen()) return "Pick a chair";
-  if (!table.mySeat) return "Ready to sit";
-  if (table.phase === "WAITING") return table.seatCount < 2 ? "Waiting for player" : "Start hand";
-  if (table.phase === "HAND_ANTE") {
-    if (!table.mySeat) return "Players pay ante";
-    return table.mySeat.paidAnte ? "Waiting for antes" : "Start hand";
-  }
-  if (table.phase === "HAND_COMMIT") return table.mySeat?.committed ? "Waiting for players" : "Pick strength";
-  if (table.phase === "HAND_BET") return isMyTurn() ? "Your move" : "Opponent move";
-  if (table.phase === "HAND_REVEAL") return table.mySeat?.revealed ? "Waiting showdown" : "Show cards";
-  if (table.phase === "HAND_SETTLED") return "Hand paid out";
-  if (table.phase === "TABLE_CLOSED") return "Table closed";
-  return formatPhase(table.phase);
-}
-
-function refreshControls() {
-  const table = state.table;
-  const hasContract = Boolean(state.readContract) && isAddress(CONTRACT_ADDRESS);
-  const connected = Boolean(state.account && state.writeContract);
-  const phase = table?.phase || "WAITING";
-  const seated = Boolean(table?.mySeat);
-  const selectedOpen = isSelectedSeatOpen();
-  const myTurn = isMyTurn();
-  const myDue = callDue();
-  const currentBet = table?.currentBet || 0n;
-
-  setButtonsDisabled(true);
-
-  elements.joinButton.textContent = seated
-    ? "Seated"
-    : selectedOpen
-      ? "Sit here"
-      : "Choose chair";
-
-  elements.joinButton.disabled =
-    state.busy || !state.tableSelected || !hasContract || seated || !selectedOpen || table?.seatCount >= MAX_SEATS;
-  elements.topUpButton.disabled =
-    state.busy || !connected || !seated || phase === "TABLE_CLOSED";
-  elements.payAnteButton.disabled =
-    state.busy || !connected || !seated || table?.mySeat?.paidAnte ||
-    !(phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED") ||
-    table?.seatCount < 2;
-  elements.commitButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_COMMIT" || table?.mySeat?.committed || !table?.mySeat?.active;
-  elements.checkButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet > 0n;
-  elements.betButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet > 0n;
-  elements.callButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || myDue <= 0n;
-  elements.raiseButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet <= 0n;
-  elements.foldButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn;
-  elements.revealButton.disabled =
-    state.busy || !connected || !seated || phase !== "HAND_REVEAL" || table?.mySeat?.revealed || !table?.mySeat?.active;
-  elements.timeoutButton.disabled =
-    state.busy || !connected || !seated || !table?.timeoutAt || Date.now() / 1000 < table.timeoutAt;
-  elements.cashOutButton.disabled =
-    state.busy || !connected || !seated || table?.mySeat?.active ||
-    !(phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED" || phase === "TABLE_CLOSED");
-  elements.claimButton.disabled =
-    state.busy || !connected || !table?.pending || table.pending <= 0n;
-
-  refreshActionVisibility({ phase, seated, selectedOpen, myTurn, currentBet, table });
-}
-
-function setButtonsDisabled(disabled) {
-  [
-    elements.joinButton,
-    elements.topUpButton,
-    elements.payAnteButton,
-    elements.commitButton,
-    elements.betButton,
-    elements.checkButton,
-    elements.callButton,
-    elements.raiseButton,
-    elements.foldButton,
-    elements.revealButton,
-    elements.timeoutButton,
-    elements.cashOutButton,
-    elements.claimButton
-  ].forEach((button) => {
-    button.disabled = disabled;
-  });
-}
-
-function refreshActionVisibility({ phase, seated, myTurn, currentBet, table }) {
-  const waitingForSeat = !seated;
-  const anteStep =
-    seated &&
-    table?.seatCount >= 2 &&
-    (phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED");
-  const commitStep = seated && phase === "HAND_COMMIT";
-  const bettingStep = seated && phase === "HAND_BET";
-  const revealStep = seated && phase === "HAND_REVEAL";
-  const showTableTools = seated && phase !== "TABLE_CLOSED";
-  const canTimeout = seated && table?.timeoutAt && Date.now() / 1000 >= table.timeoutAt;
-  const canCashOut =
-    seated &&
-    !table?.mySeat?.active &&
-    (phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED" || phase === "TABLE_CLOSED");
-  const canClaim = Boolean(table?.pending && table.pending > 0n);
-
-  setVisible(elements.stakeField, waitingForSeat);
-  setVisible(elements.joinButton, waitingForSeat);
-  setVisible(elements.topUpButton, showTableTools && !commitStep && !bettingStep && !revealStep);
-  setVisible(elements.payAnteButton, anteStep);
-  setVisible(elements.numberField, commitStep);
-  setVisible(elements.commitButton, commitStep);
-  setVisible(elements.betField, bettingStep && myTurn);
-  setVisible(elements.betButton, bettingStep && myTurn && currentBet <= 0n);
-  setVisible(elements.checkButton, bettingStep && myTurn && currentBet <= 0n);
-  setVisible(elements.callButton, bettingStep && myTurn && currentBet > 0n);
-  setVisible(elements.raiseButton, bettingStep && myTurn && currentBet > 0n);
-  setVisible(elements.foldButton, bettingStep && myTurn);
-  setVisible(elements.revealButton, revealStep);
-  setVisible(elements.timeoutButton, canTimeout);
-  setVisible(elements.cashOutButton, canCashOut);
-  setVisible(elements.claimButton, canClaim);
-}
-
-function setVisible(element, visible) {
-  if (element) element.hidden = !visible;
-}
-
-function isMyTurn() {
-  if (!state.table?.mySeat) return false;
-  return state.table.currentActorSeat === state.table.mySeat.index;
-}
-
-function callDue() {
-  const table = state.table;
-  if (!table?.mySeat || table.currentBet <= table.mySeat.contribution) return 0n;
-  return table.currentBet - table.mySeat.contribution;
-}
-
-function pushStackHistory(table) {
-  const occupied = table.seats.filter((seat) => seat.occupied);
-  const first = occupied[0]?.stack || 0n;
-  const second = occupied[1]?.stack || 0n;
-  const key = `${table.phase}:${table.handNumber}:${first}:${second}:${table.handPot}:${table.seatCount}`;
-  if (state.history[state.history.length - 1]?.key === key) return;
-  state.history.push({
-    key,
-    phase: table.phase,
-    hand: table.handNumber,
-    stack1: first,
-    stack2: second,
-    pot: table.handPot
-  });
-  state.history = state.history.slice(-12);
-}
-
-function renderChart() {
-  elements.stackChart.innerHTML = "";
-  const max = state.history.reduce((value, item) => {
-    return item.stack1 > value ? item.stack1 : item.stack2 > value ? item.stack2 : value;
-  }, 1n);
-
-  state.history.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "chart-row";
-    row.innerHTML = `
-      <span>H${item.hand}</span>
-      <div class="chart-bar p1" style="width:${barWidth(item.stack1, max)}%"></div>
-      <div class="chart-bar p2" style="width:${barWidth(item.stack2, max)}%"></div>
-    `;
-    elements.stackChart.append(row);
-  });
-}
-
-function renderEventLog() {
-  elements.eventLog.innerHTML = "";
-  state.history.slice(-6).reverse().forEach((item) => {
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <span class="rank">H${item.hand}</span>
-      <span class="name">${escapeHtml(formatPhase(item.phase))} - pot ${formatEth(item.pot)}</span>
-      <span class="points">${formatCompactEth(item.stack1)} / ${formatCompactEth(item.stack2)}</span>
-    `;
-    elements.eventLog.append(li);
-  });
-}
-
-function startPolling() {
-  clearInterval(state.pollId);
-  state.pollId = window.setInterval(() => {
-    refreshTable().catch((error) => console.info("Refresh skipped:", error.message));
-  }, 5000);
-  clearInterval(state.chatPollId);
-  state.chatPollId = window.setInterval(() => {
-    refreshChats().catch((error) => console.info("Chat refresh skipped:", error.message));
-  }, 4000);
-}
-
-async function refreshChats() {
-  const [lobby, table] = await Promise.all([loadChat("lobby"), loadChat("table")]);
-  renderLastChat(elements.lobbyLastChat, lobby);
-  renderLastChat(elements.tableLastChat, table);
-}
-
-async function loadChat(room) {
+async function refreshOffchainTable() {
   try {
-    const response = await fetch(`/api/chat?room=${encodeURIComponent(room)}`, {
+    const response = await fetch(`/api/tables/${encodeURIComponent(state.tableId)}?player=${encodeURIComponent(state.account || "")}`, {
       headers: { Accept: "application/json" }
     });
-    if (!response.ok) return [];
+    if (!response.ok) return;
     const data = await response.json();
-    return Array.isArray(data.messages) ? data.messages : [];
+    state.offchainTable = data.table || null;
   } catch {
-    return [];
+    state.offchainTable = null;
   }
 }
 
-function renderLastChat(element, messages) {
-  const last = messages[messages.length - 1];
-  if (!last) return;
-  element.textContent = `${last.player || "anon"}: ${last.message}`;
-}
-
-async function sendChat(event, room) {
-  event.preventDefault();
-  const input = room === "lobby" ? elements.lobbyChatInput : elements.tableChatInput;
-  const message = input.value.trim();
-  if (!message) return;
-  input.value = "";
+async function refreshChainTable() {
+  if (!state.readContract || !state.tableId) {
+    state.chainTable = null;
+    return;
+  }
 
   try {
-    await fetch("/api/chat", {
+    const result = await state.readContract.getTable(tableIdBytes());
+    const table = result?.exists === undefined && result?.[0] ? result[0] : result;
+    const pending = state.account ? await state.readContract.pendingWithdrawals(state.account) : 0n;
+    state.pendingClaim = pending;
+    state.chainTable = {
+      exists: Boolean(table.exists),
+      player1: table.player1,
+      player2: table.player2,
+      stake: table.stake,
+      pot: table.pot,
+      stage: STAGES[Number(table.stage)] || "waiting",
+      turn: table.turn,
+      actionDeadline: Number(table.actionDeadline),
+      currentBet: table.currentBet,
+      confirmed1: Boolean(table.confirmed1),
+      confirmed2: Boolean(table.confirmed2),
+      winner: table.winner,
+      refunded: Boolean(table.refunded)
+    };
+  } catch (error) {
+    console.info("Contract table read failed:", error.message);
+    state.chainTable = null;
+  }
+}
+
+async function syncOffchainWithChain() {
+  if (!state.tableId || !state.chainTable?.exists) return;
+  try {
+    await fetch(`/api/tables/${encodeURIComponent(state.tableId)}/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({
-        room,
-        message,
-        player: state.account ? shortAddress(state.account) : "guest"
+        viewer: state.account,
+        stage: state.chainTable.stage,
+        player1: state.chainTable.player1,
+        player2: state.chainTable.player2,
+        winner: isAddress(state.chainTable.winner) && state.chainTable.winner !== ZERO_ADDRESS
+          ? state.chainTable.winner
+          : ""
       })
     });
-    await refreshChats();
+    await refreshOffchainTable();
   } catch {
-    setStatus("Chat is unavailable on this server.");
+    // Off-chain cards are prototype-only; chain state still renders.
   }
+}
+
+function renderTable() {
+  const chain = state.chainTable || {};
+  const offchain = state.offchainTable || {};
+  const stage = chain.exists ? chain.stage : offchain.stage || "waiting";
+  const player1 = chain.exists ? chain.player1 : offchain.player1 || "";
+  const player2 = chain.exists ? chain.player2 : offchain.player2 || "";
+  const pot = chain.exists ? formatEth(chain.pot || 0n) : "0 ETH";
+  const stake = chain.exists && chain.stake ? formatEth(chain.stake) : `${CONFIG.defaultStakeEth || "0.0001"} ETH`;
+
+  elements.player1Label.textContent = player1 ? labelAddress(player1) : "Waiting";
+  elements.player2Label.textContent = player2 ? labelAddress(player2) : "Waiting";
+  elements.potLabel.textContent = pot;
+  elements.stakeLabel.textContent = `${stake} stake`;
+  elements.stageLabel.textContent = stage;
+  elements.turnLabel.textContent = turnLabel(chain.turn);
+  elements.tableStatus.textContent = tableStatusText(stage, chain, offchain);
+  renderCards(elements.playerCards, offchain.playerCards || [], true);
+  renderCards(elements.communityCards, offchain.communityCards || [], false);
+  renderControls();
+  renderTimer();
+}
+
+function renderControls() {
+  const connected = Boolean(state.account);
+  const contractConfigured = isAddress(CONTRACT_ADDRESS);
+  const chain = state.chainTable;
+  const stage = chain?.stage || "waiting";
+  const isPlayer = chain?.exists && isCurrentPlayer(chain);
+  const joined = isPlayer;
+  const offchainReady = Boolean(state.offchainTable?.player1 && state.offchainTable?.player2);
+  const needsJoin = state.tableId && offchainReady && (!chain?.exists || !joined);
+  const needsConfirm = joined && stage === "confirming" && !myConfirmed(chain);
+  const myTurn = joined && sameAddress(chain?.turn, state.account);
+  const timedOut = Boolean(chain?.actionDeadline && Date.now() / 1000 > chain.actionDeadline);
+  const canAct = ACTIVE_STAGES.has(stage) && myTurn && !timedOut;
+  const canCall = canAct && BigInt(chain?.currentBet || 0) > 0n;
+  const canSettle = stage === "showdown" && joined && Boolean(state.offchainTable?.winner);
+  const canClaim = state.pendingClaim > 0n;
+
+  elements.startGameButton.disabled = state.busy || !connected;
+  elements.confirmButton.hidden = !(needsJoin || needsConfirm);
+  elements.checkButton.hidden = !(canAct && !canCall);
+  elements.betField.hidden = !canAct;
+  elements.betButton.hidden = !(canAct && !canCall);
+  elements.callButton.hidden = !canCall;
+  elements.foldButton.hidden = !canAct;
+  elements.timeoutButton.hidden = !(joined && timedOut && stage !== "finished");
+  elements.settleButton.hidden = !canSettle;
+  elements.claimButton.hidden = !canClaim;
+
+  elements.confirmButton.textContent = needsJoin ? "Confirm Stake" : "Confirm";
+  elements.confirmButton.disabled = state.busy || !connected || !contractConfigured;
+  elements.checkButton.disabled = state.busy || !contractConfigured;
+  elements.betButton.disabled = state.busy || !contractConfigured;
+  elements.callButton.disabled = state.busy || !contractConfigured;
+  elements.foldButton.disabled = state.busy || !contractConfigured;
+  elements.timeoutButton.disabled = state.busy || !contractConfigured;
+  elements.settleButton.disabled = state.busy || !contractConfigured;
+  elements.claimButton.disabled = state.busy || !contractConfigured;
+
+  if (!contractConfigured && state.tableId) {
+    elements.tableStatus.textContent = "Contract not configured.";
+  }
+}
+
+async function confirmOrJoin() {
+  if (!state.chainTable?.exists || !isCurrentPlayer(state.chainTable)) {
+    const value = parseEth(CONFIG.defaultStakeEth || "0.0001");
+    await sendTableTx("confirm stake", () => state.writeContract.joinTable(tableIdBytes(), { value }));
+    return;
+  }
+  await sendTableTx("confirm", () => state.writeContract.confirm(tableIdBytes()));
+}
+
+async function bet() {
+  const value = parseEth(elements.betInput.value || CONFIG.defaultBetEth || "0.00001");
+  await sendTableTx("bet", () => state.writeContract.bet(tableIdBytes(), { value }));
+}
+
+async function callBet() {
+  const value = BigInt(state.chainTable?.currentBet || 0);
+  if (value <= 0n) {
+    showError("No open bet to call.");
+    return;
+  }
+  await sendTableTx("call", () => state.writeContract.call(tableIdBytes(), { value }));
+}
+
+async function settleShowdown() {
+  const winner = state.offchainTable?.winner;
+  if (!isAddress(winner)) {
+    showError("Off-chain winner is not ready yet.");
+    return;
+  }
+  await sendTableTx("settle", () => state.writeContract.submitResult(tableIdBytes(), winner));
+}
+
+async function sendTableTx(label, buildTx) {
+  try {
+    await ensureWalletAndNetwork();
+    setBusy(true, `${label}: tx pending...`);
+    const tx = await buildTx();
+    elements.tableStatus.textContent = `Transaction pending: ${shortTx(tx.hash)}`;
+    await tx.wait();
+    elements.tableStatus.textContent = `Transaction confirmed: ${shortTx(tx.hash)}`;
+    await refreshTable();
+  } catch (error) {
+    showError(walletError(error, `${label} failed.`));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function ensureWalletAndNetwork() {
+  if (!state.account) {
+    await connectWallet();
+  }
+  if (!state.account) {
+    throw new Error("Wallet not connected.");
+  }
+  if (!isAddress(CONTRACT_ADDRESS)) {
+    throw new Error("Contract not configured.");
+  }
+  if (!state.writeContract) {
+    await connectWallet();
+  }
+  if (!state.writeContract) {
+    throw new Error("Contract not ready.");
+  }
+  await ensureBaseChain(state.provider);
 }
 
 async function ensureBaseChain(provider) {
@@ -959,7 +507,7 @@ async function ensureBaseChain(provider) {
       params: [{ chainId: BASE_CHAIN.hex }]
     });
   } catch (switchError) {
-    if (switchError.code !== 4902) throw switchError;
+    if (switchError.code !== 4902) throw new Error(`Wrong network. Switch to ${BASE_CHAIN.name}.`);
     await provider.request({
       method: "wallet_addEthereumChain",
       params: [
@@ -975,6 +523,139 @@ async function ensureBaseChain(provider) {
   }
 }
 
+function renderCards(container, cards, showBacks) {
+  const visibleCards = Array.isArray(cards) ? cards : [];
+  const placeholders = showBacks ? 2 : 5;
+  container.innerHTML = "";
+  for (let i = 0; i < Math.max(placeholders, visibleCards.length); i += 1) {
+    const card = visibleCards[i];
+    const element = document.createElement("span");
+    element.className = card ? `card ${cardSuit(card)}` : "card back";
+    element.textContent = card ? formatCard(card) : "";
+    container.append(element);
+  }
+}
+
+function renderTimer() {
+  const deadline = state.chainTable?.actionDeadline || 0;
+  if (!deadline || state.chainTable?.stage === "finished") {
+    elements.timerLabel.textContent = "--";
+    return;
+  }
+  const seconds = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+  elements.timerLabel.textContent = `${seconds}s`;
+}
+
+function startPolling() {
+  clearInterval(state.pollId);
+  state.pollId = window.setInterval(() => {
+    if (state.tableId) refreshTable().catch((error) => console.info("refresh skipped:", error.message));
+    else refreshLobbyChat().catch((error) => console.info("lobby chat refresh skipped:", error.message));
+  }, 5000);
+  clearInterval(state.timerId);
+  state.timerId = window.setInterval(renderTimer, 1000);
+}
+
+async function refreshLobbyChat() {
+  try {
+    const response = await fetch("/api/chat?room=lobby");
+    if (!response.ok) return;
+    const data = await response.json();
+    const last = data.messages?.[data.messages.length - 1];
+    elements.lobbyLastChat.textContent = last ? `${last.player}: ${last.message}` : "No messages yet.";
+  } catch {
+    elements.lobbyLastChat.textContent = "Chat unavailable.";
+  }
+}
+
+async function sendLobbyChat(event) {
+  event.preventDefault();
+  const message = elements.lobbyChatInput.value.trim();
+  if (!message) return;
+  elements.lobbyChatInput.value = "";
+  try {
+    await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        room: "lobby",
+        player: state.account ? shortAddress(state.account) : "guest",
+        message
+      })
+    });
+    await refreshLobbyChat();
+  } catch {
+    elements.lobbyLastChat.textContent = "Chat unavailable.";
+  }
+}
+
+async function refreshTableChat() {
+  try {
+    const response = await fetch(`/api/chat?room=${encodeURIComponent(`table:${state.tableId}`)}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    const last = data.messages?.[data.messages.length - 1];
+    elements.tableLastChat.textContent = last ? `${last.player}: ${last.message}` : "No messages yet.";
+  } catch {
+    elements.tableLastChat.textContent = "Chat unavailable.";
+  }
+}
+
+async function sendTableChat(event) {
+  event.preventDefault();
+  const message = elements.tableChatInput.value.trim();
+  if (!message) return;
+  elements.tableChatInput.value = "";
+  try {
+    await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        room: `table:${state.tableId}`,
+        player: state.account ? shortAddress(state.account) : "guest",
+        message
+      })
+    });
+    await refreshTableChat();
+  } catch {
+    elements.tableLastChat.textContent = "Chat unavailable.";
+  }
+}
+
+function attachEvents() {
+  if (!state.readContract || state.eventsAttached) return;
+  state.eventsAttached = true;
+  ["TableJoined", "TableReady", "PlayerConfirmed", "StageChanged", "TableSettled"].forEach((eventName) => {
+    state.readContract.on(eventName, (...args) => {
+      const tableId = String(args[0]).toLowerCase();
+      if (state.tableId && tableId === state.tableId.toLowerCase()) {
+        refreshTable().catch((error) => console.info("event refresh skipped:", error.message));
+      }
+    });
+  });
+}
+
+async function saveMiniApp() {
+  try {
+    if (typeof state.sdk?.actions?.addMiniApp !== "function") return;
+    await state.sdk.actions.addMiniApp();
+  } catch (error) {
+    showError(error.message || "Could not save Mini App.");
+  }
+}
+
+async function shareMiniApp() {
+  try {
+    if (typeof state.sdk?.actions?.composeCast !== "function") return;
+    await state.sdk.actions.composeCast({
+      text: "I am waiting at a Poker Clash Base Sepolia table.",
+      embeds: [CONFIG.appUrl || window.location.origin]
+    });
+  } catch (error) {
+    showError(error.message || "Could not share Mini App.");
+  }
+}
+
 async function getEthers() {
   if (!state.ethers) {
     state.ethers = await import("https://esm.sh/ethers@6.13.5");
@@ -982,98 +663,74 @@ async function getEthers() {
   return state.ethers;
 }
 
-function parseEthInput(value) {
-  const { parseEther } = state.ethers || {};
-  if (!parseEther) throw new Error("Wallet library is not ready yet.");
+function parseEth(value) {
+  const parseEther = state.ethers?.parseEther;
+  if (!parseEther) throw new Error("Wallet library is not ready.");
   return parseEther(String(value || "0").trim() || "0");
 }
 
-function saveLocalCommit(number, salt) {
-  if (!state.account || !CONTRACT_ADDRESS) return;
-  localStorage.setItem(commitStorageKey(), JSON.stringify({ number, salt, hand: state.table?.handNumber || 0 }));
+function tableIdBytes() {
+  if (!/^0x[a-fA-F0-9]{64}$/.test(state.tableId)) throw new Error("Bad table id.");
+  return state.tableId;
 }
 
-function getLocalCommit() {
-  if (!state.account || !CONTRACT_ADDRESS || !state.table) return null;
-  try {
-    const parsed = JSON.parse(localStorage.getItem(commitStorageKey()) || "null");
-    return parsed?.number && parsed?.salt ? parsed : null;
-  } catch {
-    return null;
-  }
+function currentRouteTableId() {
+  const match = window.location.hash.match(/^#\/table\/(0x[a-fA-F0-9]{64})$/);
+  return match ? match[1].toLowerCase() : "";
 }
 
-function commitStorageKey() {
-  const hand = state.table?.handNumber || 0;
-  return `poker-clash:commit:${CONTRACT_ADDRESS.toLowerCase()}:${state.account.toLowerCase()}:hand:${hand}`;
+function tableStatusText(stage, chain, offchain) {
+  if (!isAddress(CONTRACT_ADDRESS)) return "Contract not configured.";
+  if (!chain?.exists && !(offchain?.player1 && offchain?.player2)) return "Waiting for second player.";
+  if (!chain?.exists) return "Both players are matched. Confirm your stake transaction.";
+  if (stage === "waiting") return "Waiting for second player.";
+  if (stage === "confirming") return "Both players must confirm within 60 seconds.";
+  if (ACTIVE_STAGES.has(stage)) return sameAddress(chain.turn, state.account) ? "Your turn." : "Waiting for opponent.";
+  if (stage === "showdown") return offchain?.winner ? `Suggested winner: ${labelAddress(offchain.winner)}.` : "Showdown result pending.";
+  if (stage === "finished") return "Finished. Claim if you have a payout.";
+  return "Ready.";
 }
 
-function attachContractEvents() {
-  if (!state.readContract || state.eventsAttached) return;
-  state.eventsAttached = true;
-
-  [
-    "PlayerJoined",
-    "HandStarted",
-    "AntePaid",
-    "PlayerBet",
-    "PlayerCalled",
-    "PlayerRaised",
-    "PlayerFolded",
-    "PlayerChecked",
-    "HandSettled",
-    "PayoutSent",
-    "PayoutCredited",
-    "StacksUpdated"
-  ].forEach((eventName) => {
-    state.readContract.on(eventName, (...args) => {
-      const event = args[args.length - 1];
-      setStatus(formatChainEvent(eventName, args, event?.log?.transactionHash));
-      refreshTable().catch((error) => console.info("Event refresh skipped:", error.message));
-    });
-  });
+function labelAddress(address) {
+  if (!isAddress(address) || address === ZERO_ADDRESS) return "--";
+  return sameAddress(address, state.account) ? "You" : shortAddress(address);
 }
 
-function formatChainEvent(eventName, args, txHash) {
-  const tx = txHash ? ` ${shortTx(txHash)}` : "";
-  if (eventName === "PlayerJoined") return `${shortAddress(args[0])} took seat ${Number(args[1]) + 1}.${tx}`;
-  if (eventName === "AntePaid") return `${shortAddress(args[0])} confirmed ante ${formatEth(args[1])}.${tx}`;
-  if (eventName === "PlayerBet") return `${shortAddress(args[0])} bet ${formatEth(args[1])}.${tx}`;
-  if (eventName === "PlayerCalled") return `${shortAddress(args[0])} called ${formatEth(args[1])}.${tx}`;
-  if (eventName === "PlayerRaised") return `${shortAddress(args[0])} raised ${formatEth(args[1])}.${tx}`;
-  if (eventName === "PlayerFolded") return `${shortAddress(args[0])} folded.${tx}`;
-  if (eventName === "PlayerChecked") return `${shortAddress(args[0])} checked.${tx}`;
-  if (eventName === "HandStarted") return `Hand ${args[0].toString()} is waiting for antes.${tx}`;
-  if (eventName === "HandSettled") return `Hand paid. Winner ${shortAddress(args[1])}, payout ${formatEth(args[3])}, fee ${formatEth(args[4])}.${tx}`;
-  if (eventName === "PayoutSent") return `Payout sent to ${shortAddress(args[0])}: ${formatEth(args[1])}.${tx}`;
-  if (eventName === "PayoutCredited") return `Fallback claim credited to ${shortAddress(args[0])}: ${formatEth(args[1])}.${tx}`;
-  return `${eventName.replace(/([A-Z])/g, " $1").trim()}.${tx}`;
+function turnLabel(address) {
+  if (!isAddress(address) || address === ZERO_ADDRESS) return "--";
+  return sameAddress(address, state.account) ? "You" : shortAddress(address);
 }
 
-function formatPhase(value) {
-  const labels = {
-    WAITING: "Waiting",
-    HAND_ANTE: "Ante",
-    HAND_COMMIT: "Pick",
-    HAND_BET: "Betting",
-    HAND_REVEAL: "Showdown",
-    HAND_SETTLED: "Paid",
-    TABLE_CLOSED: "Closed"
-  };
-  return labels[value] || "Lobby";
+function myConfirmed(chain) {
+  if (!chain || !state.account) return false;
+  if (sameAddress(chain.player1, state.account)) return chain.confirmed1;
+  if (sameAddress(chain.player2, state.account)) return chain.confirmed2;
+  return false;
 }
 
-function formatTimeout(timestamp) {
-  const seconds = Math.max(0, Math.ceil(timestamp - Date.now() / 1000));
-  if (seconds <= 0) return "Now";
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  return `${minutes}:${String(rest).padStart(2, "0")}`;
+function isCurrentPlayer(chain) {
+  return sameAddress(chain?.player1, state.account) || sameAddress(chain?.player2, state.account);
 }
 
-function barWidth(value, max) {
-  if (max <= 0n) return 0;
-  return Number((value * 100n) / max);
+function sameAddress(a, b) {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
+function isAddress(value) {
+  return /^0x[a-fA-F0-9]{40}$/.test(String(value || ""));
+}
+
+function shortAddress(address) {
+  if (!isAddress(address)) return "--";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function shortTableId(tableId) {
+  return `${tableId.slice(0, 8)}...${tableId.slice(-6)}`;
+}
+
+function shortTx(hash) {
+  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
 }
 
 function formatEth(value) {
@@ -1085,61 +742,49 @@ function formatEth(value) {
   return `${trimmed ? `${whole}.${trimmed}` : whole} ETH`;
 }
 
-function formatCompactEth(value) {
-  return formatEth(value).replace(" ETH", "");
+function formatCard(card) {
+  const suit = card.slice(-1);
+  const rank = card.slice(0, -1);
+  return `${rank}${{ s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663" }[suit] || ""}`;
 }
 
-function setStatus(message) {
-  elements.statusLine.textContent = message;
+function cardSuit(card) {
+  return card.endsWith("h") || card.endsWith("d") ? "red" : "black";
 }
 
-function showFatalError(error) {
-  console.error(error);
-  setStatus(`App startup error: ${error?.message || error}`);
-  refreshControls();
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("Wallet provider timed out")), timeoutMs);
+    })
+  ]);
 }
 
-function getWalletError(error, fallback) {
-  const message = String(error?.shortMessage || error?.message || error || "");
-  if (error?.code === 4001 || message.toLowerCase().includes("user rejected")) {
-    return "Wallet request rejected.";
+function setBusy(busy, message = "") {
+  state.busy = busy;
+  if (message) {
+    if (state.tableId) elements.tableStatus.textContent = message;
+    else setLobbyStatus(message);
   }
+  renderControls();
+}
+
+function setLobbyStatus(message) {
+  elements.lobbyStatus.textContent = message;
+}
+
+function showError(message) {
+  if (state.tableId) elements.tableStatus.textContent = message;
+  else setLobbyStatus(message);
+}
+
+function walletError(error, fallback) {
+  const message = String(error?.shortMessage || error?.message || error || "");
+  if (error?.code === 4001 || message.toLowerCase().includes("user rejected")) return "Tx rejected.";
+  if (message.toLowerCase().includes("chain")) return `Wrong network. Switch to ${BASE_CHAIN.name}.`;
+  if (message.toLowerCase().includes("turn")) return "Not your turn.";
+  if (message.toLowerCase().includes("timeout")) return "Timeout.";
+  if (message.toLowerCase().includes("configured")) return "Contract not configured.";
   return message || fallback;
-}
-
-function sameAddress(a, b) {
-  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
-}
-
-function isAddress(value) {
-  return /^0x[a-fA-F0-9]{40}$/.test(String(value || ""));
-}
-
-function normalizeSeatIndex(value) {
-  const seat = Number(value);
-  return Number.isInteger(seat) && seat >= 0 && seat < MAX_SEATS ? seat : -1;
-}
-
-function seatPositionName(index) {
-  return ["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"][index] || "open";
-}
-
-function zeroAddress() {
-  return "0x0000000000000000000000000000000000000000";
-}
-
-function shortAddress(address) {
-  if (!address || address === zeroAddress()) return "Open";
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-function shortTx(hash) {
-  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

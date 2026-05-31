@@ -2,89 +2,66 @@
 pragma solidity ^0.8.24;
 
 /// @title Escrow
-/// @notice Six-seat on-chain poker table. Players sit with an ETH buy-in, then
-/// every hand starts only after players confirm by sending the ante transaction.
-/// Bets, calls, and raises are payable transactions that move ETH into the hand pot.
+/// @notice Testnet MVP escrow for a two-player ETH poker table on Base Sepolia.
+/// @dev Card dealing is intentionally off-chain in this prototype and is not fully trustless yet.
 contract Escrow {
-    uint8 public constant MAX_SEATS = 6;
-    uint8 private constant NO_SEAT = type(uint8).max;
-    uint256 public constant ACTION_TIMEOUT = 5 minutes;
+    uint256 public constant ACTION_TIMEOUT = 60 seconds;
     uint256 public constant DEVELOPER_FEE_BPS = 200;
     uint256 public constant BPS_DENOMINATOR = 10_000;
 
-    enum TableState {
-        WAITING,
-        HAND_ANTE,
-        HAND_COMMIT,
-        HAND_BET,
-        HAND_REVEAL,
-        HAND_SETTLED,
-        TABLE_CLOSED
+    enum Stage {
+        Waiting,
+        Confirming,
+        Preflop,
+        Flop,
+        Turn,
+        River,
+        Showdown,
+        Finished
+    }
+
+    struct Table {
+        bool exists;
+        address player1;
+        address player2;
+        uint256 stake;
+        uint256 pot;
+        Stage stage;
+        address turn;
+        uint256 actionDeadline;
+        uint256 currentBet;
+        uint8 actionsThisStage;
+        bool confirmed1;
+        bool confirmed2;
+        address winner;
+        bool refunded;
     }
 
     address public owner;
     address public feeRecipient;
+    uint256 public defaultStake;
     bool public paused;
     bool private locked;
 
-    TableState public tableState;
-    address[MAX_SEATS] public seats;
-    uint8 public seatCount;
-
-    uint256 public immutable handAnte;
-    uint256 public immutable minBuyIn;
-    uint256 public handNumber;
-    uint256 public handPot;
-    uint256 public currentBet;
-    uint256 public lastActionAt;
-
-    uint8 public currentActorSeat;
-    uint8 public lastAggressorSeat;
-    uint8 public paidAnteCount;
-    uint8 public activeCount;
-    uint8 public remainingInHand;
-
-    mapping(address => uint8) private seatIndexPlusOne;
-    mapping(address => uint256) public stacks;
-    mapping(address => uint256) public handContribution;
-    mapping(address => bytes32) public committedHashes;
-    mapping(address => uint8) public revealedNumbers;
-    mapping(address => bool) public hasPaidAnte;
-    mapping(address => bool) public isActiveInHand;
-    mapping(address => bool) public hasCommitted;
-    mapping(address => bool) public hasRevealed;
-    mapping(address => bool) public hasFolded;
-    mapping(address => bool) public hasActed;
-    mapping(address => bool) private tieWinner;
+    mapping(bytes32 => Table) private tables;
+    mapping(bytes32 => mapping(address => address)) public playerResult;
     mapping(address => uint256) public pendingWithdrawals;
 
-    event PlayerJoined(address indexed player, uint8 indexed seat, uint256 buyIn);
-    event StackToppedUp(address indexed player, uint256 amount);
-    event TableReady(uint8 seatsTaken);
-    event HandStarted(uint256 indexed handNumber, uint256 handPot);
-    event AntePaid(address indexed player, uint256 amount, uint8 activePlayers);
-    event NumberCommitted(address indexed player, bytes32 commitHash);
-    event PlayerBet(address indexed player, uint256 amount);
-    event PlayerCalled(address indexed player, uint256 amount);
-    event PlayerRaised(address indexed player, uint256 amount, uint256 newCurrentBet);
-    event PlayerFolded(address indexed player);
-    event PlayerChecked(address indexed player);
-    event NumbersRevealed(address indexed winner, uint8 winnerNumber, uint8 loserNumber);
-    event HandSettled(
-        uint256 indexed handNumber,
-        address indexed winner,
-        uint256 grossPot,
-        uint256 playerPayout,
-        uint256 developerFee
-    );
-    event PayoutSent(address indexed to, uint256 amount);
-    event PayoutCredited(address indexed to, uint256 amount);
-    event StacksUpdated(address[MAX_SEATS] seats, uint256[MAX_SEATS] stacks);
-    event TableClosed(address indexed closedBy);
+    event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake);
+    event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot);
+    event PlayerConfirmed(bytes32 indexed tableId, address indexed player);
+    event StageChanged(bytes32 indexed tableId, Stage stage, address turn, uint256 actionDeadline);
+    event PlayerChecked(bytes32 indexed tableId, address indexed player);
+    event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount);
+    event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount);
+    event PlayerFolded(bytes32 indexed tableId, address indexed player, address indexed winner);
+    event PlayerTimedOut(bytes32 indexed tableId, address indexed inactivePlayer, address indexed winner);
+    event ResultSubmitted(bytes32 indexed tableId, address indexed player, address indexed winner);
+    event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee);
+    event TableRefunded(bytes32 indexed tableId, uint256 refundPerPlayer);
     event WinningsClaimed(address indexed player, uint256 amount);
-    event PlayerTimedOut(address indexed inactivePlayer, address indexed winner);
-    event StateChanged(TableState state);
     event FeeRecipientUpdated(address indexed feeRecipient);
+    event DefaultStakeUpdated(uint256 defaultStake);
     event Paused(address indexed account);
     event Unpaused(address indexed account);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -99,11 +76,6 @@ contract Escrow {
         _;
     }
 
-    modifier onlySeated() {
-        require(isPlayer(msg.sender), "Not seated");
-        _;
-    }
-
     modifier nonReentrant() {
         require(!locked, "Reentrant call");
         locked = true;
@@ -111,264 +83,187 @@ contract Escrow {
         locked = false;
     }
 
-    constructor(address initialFeeRecipient, uint256 initialHandAnte, uint256 initialMinBuyIn) {
+    constructor(address initialFeeRecipient, uint256 initialDefaultStake) {
         require(initialFeeRecipient != address(0), "Fee recipient required");
-        require(initialHandAnte > 0, "Ante required");
-        require(initialMinBuyIn >= initialHandAnte * 2, "Buy-in too low");
+        require(initialDefaultStake > 0, "Stake required");
 
         owner = msg.sender;
         feeRecipient = initialFeeRecipient;
-        handAnte = initialHandAnte;
-        minBuyIn = initialMinBuyIn;
-        tableState = TableState.WAITING;
-        currentActorSeat = NO_SEAT;
-        lastAggressorSeat = NO_SEAT;
+        defaultStake = initialDefaultStake;
 
         emit OwnershipTransferred(address(0), msg.sender);
         emit FeeRecipientUpdated(initialFeeRecipient);
-        emit StateChanged(tableState);
+        emit DefaultStakeUpdated(initialDefaultStake);
     }
 
-    function joinGame() external payable whenNotPaused nonReentrant {
-        _joinSeat(_firstEmptySeat());
+    function joinTable(bytes32 tableId) external payable whenNotPaused nonReentrant {
+        require(tableId != bytes32(0), "Table id required");
+        Table storage table = tables[tableId];
+
+        if (!table.exists) {
+            require(msg.value == defaultStake, "Bad stake");
+            table.exists = true;
+            table.player1 = msg.sender;
+            table.stake = msg.value;
+            table.pot = msg.value;
+            table.stage = Stage.Waiting;
+            emit TableJoined(tableId, msg.sender, msg.value);
+            emit StageChanged(tableId, table.stage, address(0), 0);
+            return;
+        }
+
+        require(table.stage == Stage.Waiting, "Table not joinable");
+        require(table.player2 == address(0), "Table full");
+        require(msg.sender != table.player1, "Already joined");
+        require(msg.value == table.stake, "Stake mismatch");
+
+        table.player2 = msg.sender;
+        table.pot += msg.value;
+        table.stage = Stage.Confirming;
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+
+        emit TableJoined(tableId, msg.sender, msg.value);
+        emit TableReady(tableId, table.player1, table.player2, table.pot);
+        emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
     }
 
-    function joinSeat(uint8 seat) external payable whenNotPaused nonReentrant {
-        _joinSeat(seat);
-    }
+    function confirm(bytes32 tableId) external whenNotPaused {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.Confirming, "Not confirming");
+        require(block.timestamp <= table.actionDeadline, "Confirmation timed out");
+        require(_isPlayer(table, msg.sender), "Not player");
 
-    function _joinSeat(uint8 seat) private {
-        require(tableState != TableState.TABLE_CLOSED, "Table closed");
-        require(!isPlayer(msg.sender), "Already seated");
-        require(seatCount < MAX_SEATS, "Table full");
-        require(seat < MAX_SEATS, "Seat out of range");
-        require(seats[seat] == address(0), "Seat taken");
-        require(msg.value >= minBuyIn, "Buy-in below table limit");
+        if (msg.sender == table.player1) {
+            require(!table.confirmed1, "Already confirmed");
+            table.confirmed1 = true;
+        } else {
+            require(!table.confirmed2, "Already confirmed");
+            table.confirmed2 = true;
+        }
 
-        seats[seat] = msg.sender;
-        seatIndexPlusOne[msg.sender] = seat + 1;
-        seatCount += 1;
-        stacks[msg.sender] += msg.value;
+        emit PlayerConfirmed(tableId, msg.sender);
 
-        emit PlayerJoined(msg.sender, seat, msg.value);
-        emitStackSnapshot();
-
-        if (seatCount >= 2 && (tableState == TableState.WAITING || tableState == TableState.HAND_SETTLED)) {
-            _openAntePhase();
-        } else if (seatCount == 1) {
-            emit TableReady(seatCount);
+        if (table.confirmed1 && table.confirmed2) {
+            _startStage(tableId, table, Stage.Preflop, table.player1);
         }
     }
 
-    function topUpStack() external payable whenNotPaused onlySeated nonReentrant {
-        require(tableState != TableState.TABLE_CLOSED, "Table closed");
-        require(msg.value > 0, "Top-up required");
+    function check(bytes32 tableId) external whenNotPaused {
+        Table storage table = _activeTurnTable(tableId);
+        require(table.currentBet == 0, "Call or fold");
+        require(msg.sender == table.turn, "Not your turn");
 
-        stacks[msg.sender] += msg.value;
-        emit StackToppedUp(msg.sender, msg.value);
-        emitStackSnapshot();
-    }
+        table.actionsThisStage += 1;
+        emit PlayerChecked(tableId, msg.sender);
 
-    function payAnte() external payable whenNotPaused onlySeated nonReentrant {
-        require(seatCount >= 2, "Need at least two players");
-        if (tableState == TableState.HAND_SETTLED || tableState == TableState.WAITING) {
-            _openAntePhase();
-        }
-
-        require(tableState == TableState.HAND_ANTE, "Not ante phase");
-        require(!hasPaidAnte[msg.sender], "Ante already paid");
-        require(msg.value == handAnte, "ETH must equal ante");
-
-        hasPaidAnte[msg.sender] = true;
-        isActiveInHand[msg.sender] = true;
-        activeCount += 1;
-        remainingInHand += 1;
-        paidAnteCount += 1;
-        handPot += msg.value;
-        lastActionAt = block.timestamp;
-
-        emit AntePaid(msg.sender, msg.value, activeCount);
-
-        if (paidAnteCount == seatCount && paidAnteCount >= 2) {
-            _startCommitPhase();
+        if (table.actionsThisStage >= 2) {
+            _advanceStage(tableId, table);
+        } else {
+            _passTurn(tableId, table);
         }
     }
 
-    function commitNumber(bytes32 commitHash) external whenNotPaused onlySeated {
-        require(tableState == TableState.HAND_COMMIT, "Not commit phase");
-        require(isActiveInHand[msg.sender], "Not in hand");
-        require(commitHash != bytes32(0), "Commit required");
-        require(!hasCommitted[msg.sender], "Already committed");
+    function bet(bytes32 tableId) external payable whenNotPaused nonReentrant {
+        Table storage table = _activeTurnTable(tableId);
+        require(msg.sender == table.turn, "Not your turn");
+        require(table.currentBet == 0, "Bet already open");
+        require(msg.value > 0, "Bet required");
 
-        committedHashes[msg.sender] = commitHash;
-        hasCommitted[msg.sender] = true;
-        lastActionAt = block.timestamp;
+        table.currentBet = msg.value;
+        table.pot += msg.value;
+        table.actionsThisStage = 1;
+        table.turn = _opponent(table, msg.sender);
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
 
-        emit NumberCommitted(msg.sender, commitHash);
-
-        if (_allActiveCommitted()) {
-            tableState = TableState.HAND_BET;
-            currentActorSeat = _firstActiveSeat();
-            lastActionAt = block.timestamp;
-            emit StateChanged(tableState);
-        }
+        emit PlayerBet(tableId, msg.sender, msg.value);
+        emit StageChanged(tableId, table.stage, table.turn, table.actionDeadline);
     }
 
-    function check() external whenNotPaused onlySeated {
-        require(tableState == TableState.HAND_BET, "Not betting phase");
-        require(_seatOf(msg.sender) == currentActorSeat, "Not your turn");
-        require(currentBet == 0, "Bet already made");
-        require(isActiveInHand[msg.sender], "Not in hand");
+    function call(bytes32 tableId) external payable whenNotPaused nonReentrant {
+        Table storage table = _activeTurnTable(tableId);
+        require(msg.sender == table.turn, "Not your turn");
+        require(table.currentBet > 0, "No bet to call");
+        require(msg.value == table.currentBet, "Call must match bet");
 
-        hasActed[msg.sender] = true;
-        emit PlayerChecked(msg.sender);
+        table.pot += msg.value;
+        table.currentBet = 0;
+        table.actionsThisStage = 2;
 
-        _afterAction();
+        emit PlayerCalled(tableId, msg.sender, msg.value);
+        _advanceStage(tableId, table);
     }
 
-    function bet(uint256 amount) external payable whenNotPaused onlySeated nonReentrant {
-        require(tableState == TableState.HAND_BET, "Not betting phase");
-        require(_seatOf(msg.sender) == currentActorSeat, "Not your turn");
-        require(currentBet == 0, "Use raise");
-        require(amount >= handAnte, "Bet below table limit");
-        require(msg.value == amount, "ETH must equal bet");
+    function fold(bytes32 tableId) external whenNotPaused nonReentrant {
+        Table storage table = _activeTurnTable(tableId);
+        require(msg.sender == table.turn, "Not your turn");
 
-        handContribution[msg.sender] += amount;
-        handPot += amount;
-        currentBet = handContribution[msg.sender];
-        lastAggressorSeat = currentActorSeat;
-        hasActed[msg.sender] = true;
-        lastActionAt = block.timestamp;
-
-        emit PlayerBet(msg.sender, amount);
-        _afterAction();
+        address winner = _opponent(table, msg.sender);
+        emit PlayerFolded(tableId, msg.sender, winner);
+        _settle(tableId, table, winner);
     }
 
-    function call() external payable whenNotPaused onlySeated nonReentrant {
-        require(tableState == TableState.HAND_BET, "Not betting phase");
-        require(_seatOf(msg.sender) == currentActorSeat, "Not your turn");
-        require(currentBet > 0, "No bet to call");
-        require(isActiveInHand[msg.sender], "Not in hand");
+    function timeout(bytes32 tableId) external whenNotPaused nonReentrant {
+        Table storage table = _table(tableId);
+        require(table.actionDeadline > 0, "No timeout");
+        require(block.timestamp > table.actionDeadline, "Timeout not reached");
 
-        uint256 due = currentBet - handContribution[msg.sender];
-        require(due > 0, "Already matched");
-        require(msg.value == due, "ETH must match call");
-
-        handContribution[msg.sender] += due;
-        handPot += due;
-        hasActed[msg.sender] = true;
-        lastActionAt = block.timestamp;
-
-        emit PlayerCalled(msg.sender, due);
-        _afterAction();
-    }
-
-    function raiseBet(uint256 amount) external payable whenNotPaused onlySeated nonReentrant {
-        require(tableState == TableState.HAND_BET, "Not betting phase");
-        require(_seatOf(msg.sender) == currentActorSeat, "Not your turn");
-        require(currentBet > 0, "Use bet first");
-        require(amount >= handAnte, "Raise below table limit");
-        require(msg.value == amount, "ETH must equal raise");
-        require(handContribution[msg.sender] + amount > currentBet, "Raise too small");
-
-        handContribution[msg.sender] += amount;
-        handPot += amount;
-        currentBet = handContribution[msg.sender];
-        lastAggressorSeat = currentActorSeat;
-        _resetActiveActions();
-        hasActed[msg.sender] = true;
-        lastActionAt = block.timestamp;
-
-        emit PlayerRaised(msg.sender, amount, currentBet);
-        _afterAction();
-    }
-
-    function fold() external whenNotPaused onlySeated nonReentrant {
-        require(tableState == TableState.HAND_BET, "Not betting phase");
-        require(_seatOf(msg.sender) == currentActorSeat, "Not your turn");
-        _fold(msg.sender);
-    }
-
-    function reveal(uint8 number, bytes32 salt) external whenNotPaused onlySeated nonReentrant {
-        require(tableState == TableState.HAND_REVEAL, "Not reveal phase");
-        require(isActiveInHand[msg.sender], "Not in hand");
-        require(hasCommitted[msg.sender], "No commit");
-        require(!hasRevealed[msg.sender], "Already revealed");
-        require(number >= 1 && number <= 10, "Number must be 1-10");
-        require(
-            keccak256(abi.encodePacked(number, salt)) == committedHashes[msg.sender],
-            "Bad reveal"
-        );
-
-        revealedNumbers[msg.sender] = number;
-        hasRevealed[msg.sender] = true;
-        lastActionAt = block.timestamp;
-
-        if (_allActiveRevealed()) {
-            _settleReveal();
-        }
-    }
-
-    function timeout() external whenNotPaused onlySeated nonReentrant {
-        require(
-            tableState == TableState.HAND_ANTE ||
-                tableState == TableState.HAND_COMMIT ||
-                tableState == TableState.HAND_BET ||
-                tableState == TableState.HAND_REVEAL,
-            "No active timeout"
-        );
-        require(block.timestamp >= lastActionAt + ACTION_TIMEOUT, "Timeout not reached");
-
-        if (tableState == TableState.HAND_ANTE) {
-            require(paidAnteCount > 0, "No ante paid");
-            if (paidAnteCount >= 2) {
-                _startCommitPhase();
+        if (table.stage == Stage.Confirming) {
+            if (table.confirmed1 && !table.confirmed2) {
+                emit PlayerTimedOut(tableId, table.player2, table.player1);
+                _settle(tableId, table, table.player1);
+            } else if (table.confirmed2 && !table.confirmed1) {
+                emit PlayerTimedOut(tableId, table.player1, table.player2);
+                _settle(tableId, table, table.player2);
             } else {
-                address paidPlayer = _firstActivePlayer();
-                uint256 refund = handPot;
-                handPot = 0;
-                tableState = TableState.HAND_SETTLED;
-                _payOrCredit(paidPlayer, refund);
-                emit HandSettled(handNumber, address(0), refund, refund, 0);
-                emit StateChanged(tableState);
+                _refund(tableId, table);
             }
             return;
         }
 
-        address inactive = _inactivePlayer();
-        require(inactive != address(0), "No timeout target");
-        address winner = opponentOf(inactive);
+        if (table.stage == Stage.Showdown) {
+            address result1 = playerResult[tableId][table.player1];
+            address result2 = playerResult[tableId][table.player2];
+            if (result1 != address(0) && result2 == address(0)) {
+                emit PlayerTimedOut(tableId, table.player2, result1);
+                _settle(tableId, table, result1);
+                return;
+            }
+            if (result2 != address(0) && result1 == address(0)) {
+                emit PlayerTimedOut(tableId, table.player1, result2);
+                _settle(tableId, table, result2);
+                return;
+            }
+            revert("Showdown result required");
+        }
 
-        emit PlayerTimedOut(inactive, winner);
-        if (tableState == TableState.HAND_BET) {
-            _fold(inactive);
-        } else {
-            _removeInactiveFromHand(inactive);
+        require(_isActionStage(table.stage), "No action timeout");
+        address inactive = table.turn;
+        address winner = _opponent(table, inactive);
+        emit PlayerTimedOut(tableId, inactive, winner);
+        _settle(tableId, table, winner);
+    }
+
+    function submitResult(bytes32 tableId, address winner) external whenNotPaused nonReentrant {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.Showdown, "Not showdown");
+        require(_isPlayer(table, msg.sender), "Not player");
+        require(winner == table.player1 || winner == table.player2, "Winner not player");
+
+        playerResult[tableId][msg.sender] = winner;
+        emit ResultSubmitted(tableId, msg.sender, winner);
+
+        address result1 = playerResult[tableId][table.player1];
+        address result2 = playerResult[tableId][table.player2];
+        if (result1 != address(0) && result1 == result2) {
+            _settle(tableId, table, winner);
         }
     }
 
-    function cashOutStack() external whenNotPaused onlySeated nonReentrant {
-        require(
-            tableState == TableState.WAITING ||
-                tableState == TableState.HAND_ANTE ||
-                tableState == TableState.HAND_SETTLED ||
-                tableState == TableState.TABLE_CLOSED,
-            "Finish hand first"
-        );
-        require(!isActiveInHand[msg.sender], "Finish active hand first");
-
-        uint256 amount = stacks[msg.sender];
-        require(amount > 0, "No stack");
-        stacks[msg.sender] = 0;
-        _removeSeat(msg.sender);
-        _payOrCredit(msg.sender, amount);
-
-        if (seatCount < 2 && tableState != TableState.TABLE_CLOSED) {
-            tableState = TableState.WAITING;
-            emit StateChanged(tableState);
-        }
-
-        emitStackSnapshot();
+    function resolveDispute(bytes32 tableId, address winner) external onlyOwner nonReentrant {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.Showdown, "Not showdown");
+        require(winner == table.player1 || winner == table.player2, "Winner not player");
+        _settle(tableId, table, winner);
     }
 
     function claimWinnings() external nonReentrant {
@@ -380,6 +275,18 @@ contract Escrow {
         require(success, "ETH transfer failed");
 
         emit WinningsClaimed(msg.sender, amount);
+    }
+
+    function setFeeRecipient(address newFeeRecipient) external onlyOwner {
+        require(newFeeRecipient != address(0), "Fee recipient required");
+        feeRecipient = newFeeRecipient;
+        emit FeeRecipientUpdated(newFeeRecipient);
+    }
+
+    function setDefaultStake(uint256 newDefaultStake) external onlyOwner {
+        require(newDefaultStake > 0, "Stake required");
+        defaultStake = newDefaultStake;
+        emit DefaultStakeUpdated(newDefaultStake);
     }
 
     function pause() external onlyOwner {
@@ -394,444 +301,115 @@ contract Escrow {
         emit Unpaused(msg.sender);
     }
 
-    function setFeeRecipient(address newFeeRecipient) external onlyOwner {
-        require(newFeeRecipient != address(0), "Fee recipient required");
-        feeRecipient = newFeeRecipient;
-        emit FeeRecipientUpdated(newFeeRecipient);
-    }
-
-    function closeTable() external onlyOwner nonReentrant {
-        tableState = TableState.TABLE_CLOSED;
-        emit StateChanged(tableState);
-        emit TableClosed(msg.sender);
-    }
-
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Owner required");
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
-    function gameState() external view returns (uint8) {
-        return uint8(tableState);
+    function getTable(bytes32 tableId) external view returns (Table memory table) {
+        table = tables[tableId];
     }
 
-    function roundNumber() external view returns (uint256) {
-        return handNumber;
+    function _activeTurnTable(bytes32 tableId) private view returns (Table storage table) {
+        table = _table(tableId);
+        require(_isActionStage(table.stage), "Not action stage");
+        require(table.turn != address(0), "No turn");
+        require(block.timestamp <= table.actionDeadline, "Action timed out");
     }
 
-    function roundAnte() external view returns (uint256) {
-        return handAnte;
+    function _table(bytes32 tableId) private view returns (Table storage table) {
+        table = tables[tableId];
+        require(table.exists, "Table not found");
     }
 
-    function roundPot() external view returns (uint256) {
-        return handPot;
+    function _startStage(bytes32 tableId, Table storage table, Stage stage, address turn) private {
+        table.stage = stage;
+        table.turn = turn;
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+        table.actionsThisStage = 0;
+        table.currentBet = 0;
+        emit StageChanged(tableId, stage, turn, table.actionDeadline);
     }
 
-    function getPlayers() external view returns (address player1, address player2) {
-        return (seats[0], seats[1]);
+    function _passTurn(bytes32 tableId, Table storage table) private {
+        table.turn = _opponent(table, table.turn);
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+        emit StageChanged(tableId, table.stage, table.turn, table.actionDeadline);
     }
 
-    function getSeats() external view returns (address[MAX_SEATS] memory) {
-        return seats;
-    }
-
-    function seatOf(address player) external view returns (uint8) {
-        require(isPlayer(player), "Not seated");
-        return _seatOf(player);
-    }
-
-    function isPlayer(address account) public view returns (bool) {
-        return seatIndexPlusOne[account] != 0;
-    }
-
-    function opponentOf(address account) public view returns (address) {
-        if (remainingInHand == 1) return _firstActivePlayer();
-        uint8 seat = _seatOf(account);
-        uint8 nextSeat = _nextActiveSeat(seat);
-        if (nextSeat == NO_SEAT) return address(0);
-        return seats[nextSeat];
-    }
-
-    function timeoutAt() external view returns (uint256) {
-        if (
-            tableState != TableState.HAND_ANTE &&
-            tableState != TableState.HAND_COMMIT &&
-            tableState != TableState.HAND_BET &&
-            tableState != TableState.HAND_REVEAL
-        ) {
-            return 0;
-        }
-        return lastActionAt + ACTION_TIMEOUT;
-    }
-
-    function emitStackSnapshot() public {
-        uint256[MAX_SEATS] memory snapshot;
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            snapshot[i] = stacks[seats[i]];
-        }
-        emit StacksUpdated(seats, snapshot);
-    }
-
-    function _openAntePhase() private {
-        require(seatCount >= 2, "Need at least two players");
-
-        handNumber += 1;
-        handPot = 0;
-        currentBet = 0;
-        currentActorSeat = NO_SEAT;
-        lastAggressorSeat = NO_SEAT;
-        paidAnteCount = 0;
-        activeCount = 0;
-        remainingInHand = 0;
-
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0)) {
-                _clearHandPlayer(player);
-            }
-        }
-
-        tableState = TableState.HAND_ANTE;
-        lastActionAt = block.timestamp;
-
-        emit HandStarted(handNumber, 0);
-        emit StateChanged(tableState);
-    }
-
-    function _startCommitPhase() private {
-        require(paidAnteCount >= 2, "Need two antes");
-        tableState = TableState.HAND_COMMIT;
-        lastActionAt = block.timestamp;
-        emit StateChanged(tableState);
-    }
-
-    function _clearHandPlayer(address player) private {
-        handContribution[player] = 0;
-        committedHashes[player] = bytes32(0);
-        revealedNumbers[player] = 0;
-        hasPaidAnte[player] = false;
-        isActiveInHand[player] = false;
-        hasCommitted[player] = false;
-        hasRevealed[player] = false;
-        hasFolded[player] = false;
-        hasActed[player] = false;
-        tieWinner[player] = false;
-    }
-
-    function _afterAction() private {
-        if (remainingInHand == 1) {
-            _settleHand(_firstActivePlayer());
-            return;
-        }
-
-        if (_bettingComplete()) {
-            currentActorSeat = NO_SEAT;
-            tableState = TableState.HAND_REVEAL;
-            lastActionAt = block.timestamp;
-            emit StateChanged(tableState);
-            return;
-        }
-
-        currentActorSeat = _nextActionSeat(currentActorSeat);
-        lastActionAt = block.timestamp;
-    }
-
-    function _fold(address player) private {
-        require(isActiveInHand[player], "Not in hand");
-        isActiveInHand[player] = false;
-        hasFolded[player] = true;
-        hasActed[player] = true;
-        remainingInHand -= 1;
-
-        emit PlayerFolded(player);
-
-        if (remainingInHand == 1) {
-            _settleHand(_firstActivePlayer());
-            return;
-        }
-
-        _afterAction();
-    }
-
-    function _removeInactiveFromHand(address player) private {
-        require(isActiveInHand[player], "Not in hand");
-        isActiveInHand[player] = false;
-        hasFolded[player] = true;
-        remainingInHand -= 1;
-
-        emit PlayerFolded(player);
-
-        if (remainingInHand == 1) {
-            _settleHand(_firstActivePlayer());
-            return;
-        }
-
-        if (tableState == TableState.HAND_COMMIT && _allActiveCommitted()) {
-            tableState = TableState.HAND_BET;
-            currentActorSeat = _firstActiveSeat();
-            lastActionAt = block.timestamp;
-            emit StateChanged(tableState);
-            return;
-        }
-
-        if (tableState == TableState.HAND_REVEAL && _allActiveRevealed()) {
-            _settleReveal();
+    function _advanceStage(bytes32 tableId, Table storage table) private {
+        if (table.stage == Stage.Preflop) {
+            _startStage(tableId, table, Stage.Flop, table.player1);
+        } else if (table.stage == Stage.Flop) {
+            _startStage(tableId, table, Stage.Turn, table.player1);
+        } else if (table.stage == Stage.Turn) {
+            _startStage(tableId, table, Stage.River, table.player1);
+        } else if (table.stage == Stage.River) {
+            table.stage = Stage.Showdown;
+            table.turn = address(0);
+            table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+            table.actionsThisStage = 0;
+            table.currentBet = 0;
+            emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+        } else {
+            revert("Cannot advance");
         }
     }
 
-    function _settleReveal() private {
-        uint8 bestNumber = 0;
-        uint8 winners = 0;
-        address firstWinner = address(0);
-        uint8 secondNumber = 0;
+    function _settle(bytes32 tableId, Table storage table, address winner) private {
+        require(winner == table.player1 || winner == table.player2, "Winner not player");
+        require(table.stage != Stage.Finished, "Already finished");
 
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player]) {
-                uint8 number = revealedNumbers[player];
-                if (number > bestNumber) {
-                    bestNumber = number;
-                    firstWinner = player;
-                    winners = 1;
-                } else if (number == bestNumber) {
-                    winners += 1;
-                } else if (number > secondNumber) {
-                    secondNumber = number;
-                }
-            }
-        }
-
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player] && revealedNumbers[player] == bestNumber) {
-                tieWinner[player] = true;
-            }
-        }
-
-        emit NumbersRevealed(winners == 1 ? firstWinner : address(0), bestNumber, secondNumber);
-        _settleHand(winners == 1 ? firstWinner : address(0));
-    }
-
-    function _settleHand(address winner) private {
-        uint256 grossPot = handPot;
+        uint256 grossPot = table.pot;
         uint256 developerFee = (grossPot * DEVELOPER_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 playerPayout = grossPot - developerFee;
+        uint256 payout = grossPot - developerFee;
 
-        tableState = TableState.HAND_SETTLED;
-        handPot = 0;
-        currentBet = 0;
-        currentActorSeat = NO_SEAT;
-        lastAggressorSeat = NO_SEAT;
-        lastActionAt = block.timestamp;
+        table.pot = 0;
+        table.winner = winner;
+        table.stage = Stage.Finished;
+        table.turn = address(0);
+        table.actionDeadline = 0;
 
+        pendingWithdrawals[winner] += payout;
         if (developerFee > 0) {
-            _payOrCredit(feeRecipient, developerFee);
+            pendingWithdrawals[feeRecipient] += developerFee;
         }
 
-        if (winner == address(0)) {
-            _splitPayout(playerPayout);
-        } else {
-            require(isPlayer(winner), "Winner not seated");
-            _payOrCredit(winner, playerPayout);
-        }
-
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0)) {
-                isActiveInHand[player] = false;
-            }
-        }
-
-        emit HandSettled(handNumber, winner, grossPot, playerPayout, developerFee);
-        emitStackSnapshot();
-        emit StateChanged(tableState);
+        emit TableSettled(tableId, winner, payout, developerFee);
+        emit StageChanged(tableId, table.stage, address(0), 0);
     }
 
-    function _splitPayout(uint256 playerPayout) private {
-        uint8 winners = 0;
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player] && tieWinner[player]) {
-                winners += 1;
-            }
-        }
+    function _refund(bytes32 tableId, Table storage table) private {
+        require(table.stage != Stage.Finished, "Already finished");
+        uint256 half = table.pot / 2;
+        uint256 remainder = table.pot - (half * 2);
 
-        if (winners == 0) {
-            for (uint8 i = 0; i < MAX_SEATS; i++) {
-                address player = seats[i];
-                if (player != address(0) && isActiveInHand[player]) {
-                    winners += 1;
-                }
-            }
-        }
+        table.pot = 0;
+        table.refunded = true;
+        table.stage = Stage.Finished;
+        table.turn = address(0);
+        table.actionDeadline = 0;
 
-        uint256 share = playerPayout / winners;
-        uint256 remainder = playerPayout - (share * winners);
-        bool remainderPaid = false;
+        pendingWithdrawals[table.player1] += half + remainder;
+        pendingWithdrawals[table.player2] += half;
 
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (
-                player != address(0) &&
-                isActiveInHand[player] &&
-                (tieWinner[player] || !_hasTieWinners())
-            ) {
-                uint256 amount = share;
-                if (!remainderPaid) {
-                    amount += remainder;
-                    remainderPaid = true;
-                }
-                _payOrCredit(player, amount);
-            }
-        }
+        emit TableRefunded(tableId, half);
+        emit StageChanged(tableId, table.stage, address(0), 0);
     }
 
-    function _hasTieWinners() private view returns (bool) {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && tieWinner[player]) return true;
-        }
-        return false;
+    function _isActionStage(Stage stage) private pure returns (bool) {
+        return stage == Stage.Preflop || stage == Stage.Flop || stage == Stage.Turn || stage == Stage.River;
     }
 
-    function _payOrCredit(address to, uint256 amount) private {
-        if (to == address(0) || amount == 0) return;
-
-        (bool success, ) = to.call{value: amount}("");
-        if (success) {
-            emit PayoutSent(to, amount);
-        } else {
-            pendingWithdrawals[to] += amount;
-            emit PayoutCredited(to, amount);
-        }
+    function _isPlayer(Table storage table, address account) private view returns (bool) {
+        return account == table.player1 || account == table.player2;
     }
 
-    function _removeSeat(address player) private {
-        uint8 seat = _seatOf(player);
-        seats[seat] = address(0);
-        seatIndexPlusOne[player] = 0;
-        seatCount -= 1;
-    }
-
-    function _firstEmptySeat() private view returns (uint8) {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            if (seats[i] == address(0)) return i;
-        }
-        revert("No seat");
-    }
-
-    function _firstActiveSeat() private view returns (uint8) {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player]) return i;
-        }
-        return NO_SEAT;
-    }
-
-    function _firstActivePlayer() private view returns (address) {
-        uint8 seat = _firstActiveSeat();
-        return seat == NO_SEAT ? address(0) : seats[seat];
-    }
-
-    function _nextActiveSeat(uint8 fromSeat) private view returns (uint8) {
-        for (uint8 step = 1; step <= MAX_SEATS; step++) {
-            uint8 seat = uint8((uint256(fromSeat) + step) % MAX_SEATS);
-            address player = seats[seat];
-            if (player != address(0) && isActiveInHand[player]) return seat;
-        }
-        return NO_SEAT;
-    }
-
-    function _nextActionSeat(uint8 fromSeat) private view returns (uint8) {
-        for (uint8 step = 1; step <= MAX_SEATS; step++) {
-            uint8 seat = uint8((uint256(fromSeat) + step) % MAX_SEATS);
-            address player = seats[seat];
-            if (
-                player != address(0) &&
-                isActiveInHand[player] &&
-                (!hasActed[player] || handContribution[player] < currentBet)
-            ) {
-                return seat;
-            }
-        }
-        return NO_SEAT;
-    }
-
-    function _bettingComplete() private view returns (bool) {
-        if (remainingInHand <= 1) return true;
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (
-                player != address(0) &&
-                isActiveInHand[player] &&
-                (!hasActed[player] || handContribution[player] < currentBet)
-            ) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function _allActiveCommitted() private view returns (bool) {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player] && !hasCommitted[player]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function _allActiveRevealed() private view returns (bool) {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player] && !hasRevealed[player]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function _resetActiveActions() private {
-        for (uint8 i = 0; i < MAX_SEATS; i++) {
-            address player = seats[i];
-            if (player != address(0) && isActiveInHand[player]) {
-                hasActed[player] = false;
-            }
-        }
-    }
-
-    function _inactivePlayer() private view returns (address) {
-        if (tableState == TableState.HAND_BET) {
-            return currentActorSeat == NO_SEAT ? address(0) : seats[currentActorSeat];
-        }
-
-        if (tableState == TableState.HAND_COMMIT) {
-            for (uint8 i = 0; i < MAX_SEATS; i++) {
-                address player = seats[i];
-                if (player != address(0) && isActiveInHand[player] && !hasCommitted[player]) {
-                    return player;
-                }
-            }
-        }
-
-        if (tableState == TableState.HAND_REVEAL) {
-            for (uint8 i = 0; i < MAX_SEATS; i++) {
-                address player = seats[i];
-                if (player != address(0) && isActiveInHand[player] && !hasRevealed[player]) {
-                    return player;
-                }
-            }
-        }
-
-        return address(0);
-    }
-
-    function _seatOf(address player) private view returns (uint8) {
-        uint8 plusOne = seatIndexPlusOne[player];
-        require(plusOne != 0, "Not seated");
-        return plusOne - 1;
+    function _opponent(Table storage table, address account) private view returns (address) {
+        if (account == table.player1) return table.player2;
+        if (account == table.player2) return table.player1;
+        revert("Not player");
     }
 
     receive() external payable {

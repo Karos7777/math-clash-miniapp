@@ -6,12 +6,12 @@
     <title>__APP_NAME__</title>
     <meta
       name="description"
-      content="A 1v1 on-chain poker table where every bet and call sends real ETH into the hand pot."
+      content="Poker Clash is a Base Sepolia testnet poker MVP with ETH stakes and off-chain prototype card dealing."
     >
     <meta property="og:title" content="__APP_NAME__">
     <meta
       property="og:description"
-      content="Find a low-limit table, bet real ETH into the pot, call or fold, and settle each hand on-chain."
+      content="Join a two-player Base Sepolia table, confirm with a transaction, act on turn, and claim the testnet pot."
     >
     <meta property="og:image" content="__APP_URL__/assets/og.png">
     <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
@@ -25,180 +25,146 @@
         <div class="brand">
           <img src="/assets/icon.png" alt="" class="brand-mark">
           <div>
-            <p class="eyebrow">Base Sepolia Poker Table</p>
+            <p class="eyebrow">Base Sepolia Testnet</p>
             <h1>Poker Clash</h1>
           </div>
         </div>
         <div class="top-actions">
           <button class="miniapp-action" id="saveMiniApp" type="button" hidden>Save</button>
           <button class="miniapp-action" id="shareMiniApp" type="button" hidden>Share</button>
-          <button class="wallet-pill" id="connectWallet" type="button">Connect</button>
+          <button class="wallet-pill" id="connectWallet" type="button">Connect Wallet</button>
         </div>
       </header>
 
-      <main class="layout">
-        <section class="table-select-panel">
-          <div>
-            <p class="eyebrow">Choose table</p>
-            <strong>Low Limit 6-Max</strong>
-            <span>Buy-in 0.0001 ETH - ante 0.00001 ETH - Base Sepolia</span>
+      <main>
+        <section class="screen lobby-screen" id="lobbyScreen">
+          <div class="hero-panel">
+            <p class="eyebrow">Lobby</p>
+            <h2>Find a heads-up table</h2>
+            <p class="muted">
+              Connect a wallet, start a testnet table, then confirm your stake on Base Sepolia when the second player arrives.
+            </p>
+            <div class="lobby-actions">
+              <button class="primary-action" id="startGameButton" type="button" disabled>Start Game</button>
+              <span id="lobbyStatus">Connect wallet to start.</span>
+            </div>
           </div>
-          <button id="chooseTableButton" type="button">Enter 6-seat table</button>
-        </section>
 
-        <section class="play-surface">
-          <div class="table-room">
-            <div class="table-hud">
-              <span id="phaseLabel">Lobby</span>
-              <strong id="roundPot">0 ETH pot</strong>
-              <span id="timeoutLabel">Waiting</span>
+          <aside class="lobby-side">
+            <div class="info-panel">
+              <div>
+                <span>Stake</span>
+                <strong id="lobbyStake">0.0001 ETH</strong>
+              </div>
+              <div>
+                <span>Network</span>
+                <strong id="lobbyNetwork">Base Sepolia</strong>
+              </div>
+              <div>
+                <span>Contract</span>
+                <strong id="lobbyContract">Not configured</strong>
+              </div>
             </div>
 
-            <div class="poker-table" aria-label="Poker table">
-              <div class="table-rail"></div>
-              <div class="table-felt">
-                <div class="dealer-button">D</div>
-                <div class="community-cards" aria-hidden="true">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                  <span></span>
+            <section class="chat-panel">
+              <div class="section-title">
+                <p class="eyebrow">Lobby chat</p>
+              </div>
+              <div class="last-chat" id="lobbyLastChat">No messages yet.</div>
+              <form class="chat-form" id="lobbyChatForm">
+                <input id="lobbyChatInput" type="text" maxlength="180" placeholder="Waiting for a table">
+                <button type="submit">Send</button>
+              </form>
+            </section>
+          </aside>
+        </section>
+
+        <section class="screen table-screen" id="tableScreen" hidden>
+          <div class="table-top">
+            <button class="ghost-button" id="backToLobbyButton" type="button">Lobby</button>
+            <div>
+              <p class="eyebrow">Table</p>
+              <strong id="tableIdLabel">--</strong>
+            </div>
+            <div class="timer-pill" id="timerLabel">60s</div>
+          </div>
+
+          <section class="table-layout">
+            <div class="poker-table">
+              <div class="seat seat-one">
+                <span>Player 1</span>
+                <strong id="player1Label">Waiting</strong>
+              </div>
+              <div class="seat seat-two">
+                <span>Player 2</span>
+                <strong id="player2Label">Waiting</strong>
+              </div>
+
+              <div class="felt">
+                <div class="pot-box">
+                  <span>Pot / Stake</span>
+                  <strong id="potLabel">0 ETH</strong>
+                  <small id="stakeLabel">0.0001 ETH stake</small>
                 </div>
-                <div class="pot-mark">
-                  <span>Pot</span>
-                  <strong id="potMark">0</strong>
+                <div class="community" id="communityCards"></div>
+              </div>
+            </div>
+
+            <aside class="table-panel">
+              <div class="status-grid">
+                <div>
+                  <span>Stage</span>
+                  <strong id="stageLabel">waiting</strong>
+                </div>
+                <div>
+                  <span>Turn</span>
+                  <strong id="turnLabel">--</strong>
                 </div>
               </div>
-              <div class="seat-grid" id="seatGrid"></div>
-            </div>
-          </div>
 
-          <div class="match-panel">
-            <p class="status-line" id="statusLine">Enter the low-limit table, choose a seat, then send the buy-in transaction.</p>
-            <div class="question" id="actionTitle">Choose table</div>
+              <div class="cards-block">
+                <p class="eyebrow">Your cards</p>
+                <div class="hand" id="playerCards"></div>
+              </div>
 
-            <div class="action-grid">
-              <label>
-                <span>Low limit buy-in</span>
-                <input id="stakeInput" type="text" inputmode="decimal" value="0.0001">
-              </label>
-              <button id="joinButton" type="button">Sit here</button>
+              <p class="notice">
+                Card dealing is off-chain in this prototype and not fully trustless yet.
+              </p>
 
-              <button id="topUpButton" type="button">Top up</button>
-              <button id="payAnteButton" type="button">Confirm ante</button>
+              <div class="action-row">
+                <button id="confirmButton" type="button">Confirm</button>
+                <button id="checkButton" type="button">Check</button>
+                <label id="betField">
+                  <span>Bet</span>
+                  <input id="betInput" type="text" inputmode="decimal" value="0.00001">
+                </label>
+                <button id="betButton" type="button">Bet</button>
+                <button id="callButton" type="button">Call</button>
+                <button id="foldButton" type="button">Fold</button>
+                <button id="timeoutButton" type="button">Timeout</button>
+                <button id="settleButton" type="button">Settle</button>
+                <button id="claimButton" type="button">Claim</button>
+              </div>
 
-              <label>
-                <span>Hidden hand</span>
-                <select id="numberSelect"></select>
-              </label>
-              <button id="commitButton" type="button">Commit</button>
-
-              <label>
-                <span>Bet / raise amount</span>
-                <input id="betInput" type="text" inputmode="decimal" value="0.00001">
-              </label>
-              <button id="betButton" type="button">Bet</button>
-
-              <button id="checkButton" type="button">Check</button>
-              <button id="callButton" type="button">Call</button>
-              <button id="raiseButton" type="button">Raise</button>
-              <button id="foldButton" type="button">Fold</button>
-              <button id="revealButton" type="button">Reveal</button>
-              <button id="timeoutButton" type="button">Timeout</button>
-              <button id="cashOutButton" type="button">Cash out</button>
-              <button id="claimButton" type="button">Claim fallback</button>
-            </div>
-          </div>
-
-          <div class="versus">
-            <div class="fighter">
-              <span class="fighter-name" id="player1Name">Player 1</span>
-              <span class="fighter-score" id="player1Stack">0 ETH</span>
-            </div>
-            <div class="vs-mark">VS</div>
-            <div class="fighter rival">
-              <span class="fighter-name" id="player2Name">Player 2</span>
-              <span class="fighter-score" id="player2Stack">0 ETH</span>
-            </div>
-          </div>
-        </section>
-
-        <aside class="side-panel">
-          <section class="control-block">
-            <p class="eyebrow">Contract</p>
-            <div class="contract-box" id="contractAddress">Not configured</div>
+              <p class="status-line" id="tableStatus">Waiting for table data.</p>
+            </aside>
           </section>
 
-          <section class="control-block">
-            <p class="eyebrow">Current bet</p>
-            <strong id="currentBet">0 ETH</strong>
+          <section class="chat-panel">
+            <div class="section-title">
+              <p class="eyebrow">Table chat</p>
+            </div>
+            <div class="last-chat" id="tableLastChat">No messages yet.</div>
+            <form class="chat-form" id="tableChatForm">
+              <input id="tableChatInput" type="text" maxlength="180" placeholder="Ready?">
+              <button type="submit">Send</button>
+            </form>
           </section>
-
-          <section class="control-block">
-            <p class="eyebrow">Your hidden hand</p>
-            <div class="contract-box" id="commitInfo">No local commit yet.</div>
-          </section>
-
-          <section class="control-block">
-            <p class="eyebrow">Fallback claim</p>
-            <strong id="pendingWithdrawal">0 ETH</strong>
-          </section>
-        </aside>
-
-        <section class="stats-panel">
-          <div class="stat-grid">
-            <div>
-              <span>Hand</span>
-              <strong id="roundNumber">0</strong>
-            </div>
-            <div>
-              <span>Buy-in</span>
-              <strong id="maxRounds">--</strong>
-            </div>
-            <div>
-              <span>Ante</span>
-              <strong id="roundAnte">0</strong>
-            </div>
-            <div>
-              <span>Fee</span>
-              <strong id="feeBps">2%</strong>
-            </div>
-          </div>
-        </section>
-
-        <section class="leaderboard-panel history-panel">
-          <div class="section-title">
-            <p class="eyebrow">Table history</p>
-            <button id="refreshButton" type="button" class="ghost-button">Refresh</button>
-          </div>
-          <div class="stack-chart" id="stackChart"></div>
-          <ol class="leaderboard" id="eventLog"></ol>
-        </section>
-
-        <section class="chat-panel">
-          <div class="section-title">
-            <p class="eyebrow">Lobby chat</p>
-          </div>
-          <div class="last-chat" id="lobbyLastChat">No messages yet.</div>
-          <form class="chat-form" id="lobbyChatForm">
-            <input id="lobbyChatInput" type="text" maxlength="180" placeholder="I am waiting at low limit">
-            <button type="submit">Send</button>
-          </form>
-
-          <div class="section-title chat-title">
-            <p class="eyebrow">Table chat</p>
-          </div>
-          <div class="last-chat" id="tableLastChat">No table messages yet.</div>
-          <form class="chat-form" id="tableChatForm">
-            <input id="tableChatInput" type="text" maxlength="180" placeholder="Ready for next hand">
-            <button type="submit">Send</button>
-          </form>
         </section>
       </main>
     </div>
 
-    <script src="/config.js?v=poker4"></script>
-    <script type="module" src="/app.js?v=poker4"></script>
+    <script src="/config.js?v=mvp2"></script>
+    <script type="module" src="/app.js?v=mvp2"></script>
   </body>
 </html>

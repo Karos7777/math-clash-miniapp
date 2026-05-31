@@ -1,4 +1,5 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createStorage } = require("./storage");
@@ -50,6 +51,7 @@ const server = http.createServer((req, res) => {
         appName: APP_NAME,
         baseChainId: BASE_CHAIN_ID,
         gameContractConfigured: Boolean(GAME_CONTRACT_ADDRESS),
+        chatKvConfigured: false,
         game: "on-chain-poker-table"
       });
       return;
@@ -58,6 +60,25 @@ const server = http.createServer((req, res) => {
     if (req.method === "GET" && url.pathname === "/config.js") {
       serveClientConfig(req, res);
       return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/lobby/join") {
+      handleLobbyJoin(req, res);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/tables/")) {
+      const parts = url.pathname.split("/");
+      const tableId = parts[3];
+      const action = parts[4];
+      if (req.method === "GET" && tableId) {
+        serveTableState(tableId, url, res);
+        return;
+      }
+      if (req.method === "POST" && tableId && action === "sync") {
+        handleTableSync(req, tableId, res);
+        return;
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/api/chat") {
@@ -125,6 +146,117 @@ function serveStatic(req, res, url) {
   res.end(body);
 }
 
+function handleLobbyJoin(req, res) {
+  readJsonBody(req)
+    .then((body) => {
+      const walletAddress = normalizeAddress(body.walletAddress);
+      if (!walletAddress) {
+        sendJson(res, 400, { error: "walletAddress required" });
+        return;
+      }
+
+      const state = storage.loadState();
+      state.pokerLobby = state.pokerLobby || { waitingTableId: "" };
+      state.pokerTables = state.pokerTables || {};
+
+      let table = null;
+      const waitingId = normalizeTableId(state.pokerLobby.waitingTableId);
+      if (waitingId) {
+        const waitingTable = state.pokerTables[waitingId];
+        if (
+          waitingTable &&
+          waitingTable.status === "waiting" &&
+          normalizeAddress(waitingTable.player1) !== walletAddress
+        ) {
+          table = waitingTable;
+          table.player2 = walletAddress;
+          table.status = "confirming";
+          table.stage = "confirming";
+          table.updatedAt = new Date().toISOString();
+          table.deck = table.deck || shuffleDeck(`${table.id}:${table.createdAt}`);
+          dealTableCards(table);
+          state.pokerLobby.waitingTableId = "";
+        }
+      }
+
+      if (!table) {
+        table = createPokerTable(walletAddress);
+        state.pokerLobby.waitingTableId = table.id;
+      }
+
+      state.pokerTables[table.id] = table;
+      storage.saveState(state);
+      sendJson(res, 200, { table: publicTable(table, walletAddress) });
+    })
+    .catch((error) => {
+      const badRequest = error instanceof SyntaxError || error.message === "Body too large";
+      if (!badRequest) console.error("Lobby join failed:", error.message);
+      sendJson(res, badRequest ? 400 : 500, { error: badRequest ? "Bad JSON" : "Lobby unavailable" });
+    });
+}
+
+function serveTableState(rawTableId, url, res) {
+  const tableId = normalizeTableId(rawTableId);
+  if (!tableId) {
+    sendJson(res, 400, { error: "Bad table id" });
+    return;
+  }
+
+  const state = storage.loadState();
+  const table = state.pokerTables?.[tableId];
+  if (!table) {
+    sendJson(res, 404, { error: "Table not found" });
+    return;
+  }
+
+  sendJson(res, 200, { table: publicTable(table, normalizeAddress(url.searchParams.get("player"))) });
+}
+
+function handleTableSync(req, rawTableId, res) {
+  readJsonBody(req)
+    .then((body) => {
+      const tableId = normalizeTableId(rawTableId);
+      if (!tableId) {
+        sendJson(res, 400, { error: "Bad table id" });
+        return;
+      }
+
+      const state = storage.loadState();
+      const table = state.pokerTables?.[tableId];
+      if (!table) {
+        sendJson(res, 404, { error: "Table not found" });
+        return;
+      }
+
+      const stage = normalizeStage(body.stage);
+      if (stage) {
+        table.stage = stage;
+        table.status =
+          stage === "finished" ? "finished" : stage === "waiting" ? "waiting" : stage === "confirming" ? "confirming" : "playing";
+      }
+
+      const player1 = normalizeAddress(body.player1);
+      const player2 = normalizeAddress(body.player2);
+      if (player1) table.player1 = player1;
+      if (player2) table.player2 = player2;
+
+      const winner = normalizeAddress(body.winner);
+      if (winner) table.winner = winner;
+      if (table.stage === "showdown" && !table.winner) {
+        table.winner = pickWinner(table);
+      }
+
+      table.updatedAt = new Date().toISOString();
+      storage.saveState(state);
+      sendJson(res, 200, { table: publicTable(table, normalizeAddress(body.viewer || body.walletAddress)) });
+    })
+    .catch((error) => {
+      const badRequest = error instanceof SyntaxError || error.message === "Body too large";
+      if (!badRequest) console.error("Table sync failed:", error.message);
+      sendJson(res, badRequest ? 400 : 500, { error: badRequest ? "Bad JSON" : "Table sync unavailable" });
+    });
+}
+
 function serveChatMessages(url, res) {
   const room = normalizeRoom(url.searchParams.get("room"));
   const state = storage.loadState();
@@ -162,7 +294,131 @@ function handleChatMessage(req, res) {
 }
 
 function normalizeRoom(room) {
-  return room === "table" ? "table" : "lobby";
+  const value = String(room || "").trim();
+  if (/^table:0x[a-fA-F0-9]{64}$/.test(value)) return value.toLowerCase();
+  return value === "table" ? "table" : "lobby";
+}
+
+function createPokerTable(walletAddress) {
+  const now = new Date().toISOString();
+  const id = randomTableId();
+  return {
+    id,
+    status: "waiting",
+    stage: "waiting",
+    player1: walletAddress,
+    player2: "",
+    stake: DEFAULT_STAKE_ETH,
+    winner: "",
+    deck: shuffleDeck(`${id}:${now}`),
+    playerCards: {},
+    communityCards: [],
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function dealTableCards(table) {
+  if (!table.player1 || !table.player2 || table.communityCards?.length) return;
+  const deck = Array.isArray(table.deck) && table.deck.length >= 9 ? table.deck : shuffleDeck(table.id);
+  table.playerCards = {
+    [normalizeAddress(table.player1)]: [deck[0], deck[2]],
+    [normalizeAddress(table.player2)]: [deck[1], deck[3]]
+  };
+  table.communityCards = deck.slice(4, 9);
+}
+
+function publicTable(table, viewer) {
+  const stage = normalizeStage(table.stage) || "waiting";
+  return {
+    id: table.id,
+    status: table.status,
+    stage,
+    player1: table.player1 || "",
+    player2: table.player2 || "",
+    stake: table.stake || DEFAULT_STAKE_ETH,
+    winner: table.winner || "",
+    playerCards: viewer && table.playerCards ? table.playerCards[viewer] || [] : [],
+    communityCards: communityForStage(table.communityCards || [], stage),
+    createdAt: table.createdAt,
+    updatedAt: table.updatedAt,
+    prototypeNotice: "Card dealing is off-chain in this prototype and not fully trustless yet."
+  };
+}
+
+function communityForStage(cards, stage) {
+  if (!Array.isArray(cards)) return [];
+  if (stage === "flop") return cards.slice(0, 3);
+  if (stage === "turn") return cards.slice(0, 4);
+  if (stage === "river" || stage === "showdown" || stage === "finished") return cards.slice(0, 5);
+  return [];
+}
+
+function pickWinner(table) {
+  const p1 = normalizeAddress(table.player1);
+  const p2 = normalizeAddress(table.player2);
+  const community = table.communityCards || [];
+  const score1 = handScore([...(table.playerCards?.[p1] || []), ...community]);
+  const score2 = handScore([...(table.playerCards?.[p2] || []), ...community]);
+  return score1 >= score2 ? p1 : p2;
+}
+
+function handScore(cards) {
+  return cards.reduce((score, card) => score + cardRank(card), 0);
+}
+
+function cardRank(card) {
+  const rank = String(card || "").slice(0, -1);
+  return { A: 14, K: 13, Q: 12, J: 11, T: 10 }[rank] || Number(rank) || 0;
+}
+
+function shuffleDeck(seed) {
+  const deck = [];
+  const suits = ["s", "h", "d", "c"];
+  const ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
+  for (const rank of ranks) {
+    for (const suit of suits) {
+      deck.push(`${rank}${suit}`);
+    }
+  }
+
+  let hash = hashSeed(seed);
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    hash = (hash * 1664525 + 1013904223) >>> 0;
+    const j = hash % (i + 1);
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+function hashSeed(seed) {
+  let hash = 2166136261;
+  for (const char of String(seed || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function randomTableId() {
+  return `0x${crypto.randomBytes(32).toString("hex")}`;
+}
+
+function normalizeTableId(value) {
+  const id = String(value || "").trim();
+  return /^0x[a-fA-F0-9]{64}$/.test(id) ? id.toLowerCase() : "";
+}
+
+function normalizeAddress(value) {
+  const address = String(value || "").trim();
+  return /^0x[a-fA-F0-9]{40}$/.test(address) ? address.toLowerCase() : "";
+}
+
+function normalizeStage(value) {
+  const stage = String(value || "").toLowerCase();
+  return ["waiting", "confirming", "preflop", "flop", "turn", "river", "showdown", "finished"].includes(stage)
+    ? stage
+    : "";
 }
 
 function readJsonBody(req) {
@@ -200,7 +456,7 @@ function serveClientConfig(req, res) {
     defaultStakeEth: DEFAULT_STAKE_ETH,
     defaultBetEth: DEFAULT_BET_ETH,
     developerFeeBps: 200,
-    maxSeats: 6,
+    maxSeats: 2,
     chain: {
       id: BASE_CHAIN_ID,
       hex: `0x${BASE_CHAIN_ID.toString(16)}`,
