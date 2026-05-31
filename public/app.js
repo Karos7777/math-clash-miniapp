@@ -52,6 +52,8 @@ const CONTRACT_ABI = [
   "function pendingWithdrawals(address) view returns (uint256)",
   "function defaultStake() view returns (uint256)",
   "function defaultStreetAnte() view returns (uint256)",
+  "event TableCreated(bytes32 indexed tableId, address indexed creator, uint256 stake)",
+  "event PlayerJoined(bytes32 indexed tableId, address indexed player, uint8 seat, uint256 stake)",
   "event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake)",
   "event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot)",
   "event PlayerConfirmed(bytes32 indexed tableId, address indexed player)",
@@ -65,8 +67,10 @@ const CONTRACT_ABI = [
   "event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount)",
   "event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount)",
   "event PlayerFolded(bytes32 indexed tableId, address indexed player, address indexed winner)",
+  "event ActionSubmitted(bytes32 indexed tableId, address indexed player, string action, uint256 amount)",
   "event PlayerTimedOut(bytes32 indexed tableId, address indexed inactivePlayer, address indexed winner)",
-  "event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee)"
+  "event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee)",
+  "event HandFinished(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee)"
 ];
 
 const BASE_CHAIN = {
@@ -87,6 +91,7 @@ const state = {
   tableId: "",
   offchainTable: null,
   chainTable: null,
+  chainHandSeed: null,
   pendingClaim: 0n,
   busy: false,
   pollId: null,
@@ -454,7 +459,7 @@ async function refreshChainTable() {
     const table = result?.exists === undefined && result?.[0] ? result[0] : result;
     const pending = state.account ? await state.readContract.pendingWithdrawals(state.account) : 0n;
     state.pendingClaim = pending;
-    state.chainTable = {
+    const parsedTable = {
       exists: Boolean(table.exists),
       player1: table.player1,
       player2: table.player2,
@@ -473,9 +478,31 @@ async function refreshChainTable() {
       winner: table.winner,
       refunded: Boolean(table.refunded)
     };
+    state.chainTable = parsedTable;
+    state.chainHandSeed = await readChainHandSeed(parsedTable);
   } catch (error) {
     console.info("Contract table read failed:", error.message);
     state.chainTable = null;
+    state.chainHandSeed = null;
+  }
+}
+
+async function readChainHandSeed(table) {
+  if (!state.readContract || !table?.exists || !table.handId) return null;
+  try {
+    const hand = await state.readContract.getHandSeed(tableIdBytes(), BigInt(table.handId));
+    return {
+      commit1: hand.commit1,
+      commit2: hand.commit2,
+      secret1: hand.secret1,
+      secret2: hand.secret2,
+      revealed1: Boolean(hand.revealed1),
+      revealed2: Boolean(hand.revealed2),
+      seed: hand.seed,
+      ready: Boolean(hand.ready)
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -489,6 +516,7 @@ async function syncOffchainWithChain() {
         viewer: state.account,
         stage: state.chainTable.stage,
         handId: state.chainTable.handId,
+        handSeed: state.chainHandSeed,
         player1: state.chainTable.player1,
         player2: state.chainTable.player2,
         winner: isAddress(state.chainTable.winner) && state.chainTable.winner !== ZERO_ADDRESS
@@ -521,7 +549,8 @@ function renderTable() {
   elements.tableStatus.textContent = tableStatusText(stage, chain, offchain);
   renderCards(elements.playerCards, offchain.playerCards || [], true);
   renderCards(elements.communityCards, offchain.communityCards || [], false);
-  renderFairInfo(offchain.fair || {}, stage);
+  elements.fairPanel.hidden = simulated;
+  if (!simulated) renderFairInfo(offchain.fair || {}, stage);
   renderControls();
   renderTimer();
 }
@@ -950,6 +979,8 @@ function attachEvents() {
   state.eventsAttached = true;
   [
     "TableJoined",
+    "TableCreated",
+    "PlayerJoined",
     "TableReady",
     "PlayerConfirmed",
     "StageChanged",
@@ -958,7 +989,9 @@ function attachEvents() {
     "SeedRevealed",
     "HandSeedReady",
     "RevealTimedOut",
-    "TableSettled"
+    "ActionSubmitted",
+    "TableSettled",
+    "HandFinished"
   ].forEach((eventName) => {
     state.readContract.on(eventName, (...args) => {
       const tableId = String(args[0]).toLowerCase();

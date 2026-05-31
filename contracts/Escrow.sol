@@ -69,6 +69,8 @@ contract Escrow {
     mapping(address => uint256) public pendingWithdrawals;
 
     event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake);
+    event TableCreated(bytes32 indexed tableId, address indexed creator, uint256 stake);
+    event PlayerJoined(bytes32 indexed tableId, address indexed player, uint8 seat, uint256 stake);
     event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot);
     event PlayerConfirmed(bytes32 indexed tableId, address indexed player);
     event StageChanged(bytes32 indexed tableId, Stage stage, address turn, uint256 actionDeadline);
@@ -77,9 +79,11 @@ contract Escrow {
     event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount);
     event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount);
     event PlayerFolded(bytes32 indexed tableId, address indexed player, address indexed winner);
+    event ActionSubmitted(bytes32 indexed tableId, address indexed player, string action, uint256 amount);
     event PlayerTimedOut(bytes32 indexed tableId, address indexed inactivePlayer, address indexed winner);
     event ResultSubmitted(bytes32 indexed tableId, address indexed player, address indexed winner);
     event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee);
+    event HandFinished(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee);
     event TableRefunded(bytes32 indexed tableId, uint256 refundPerPlayer);
     event WinningsClaimed(address indexed player, uint256 amount);
     event SeedCommitted(bytes32 indexed tableId, uint256 indexed handId, address indexed player, bytes32 commit);
@@ -140,6 +144,8 @@ contract Escrow {
             table.streetAnte = defaultStreetAnte;
             table.pot = msg.value;
             table.stage = Stage.Waiting;
+            emit TableCreated(tableId, msg.sender, msg.value);
+            emit PlayerJoined(tableId, msg.sender, 1, msg.value);
             emit TableJoined(tableId, msg.sender, msg.value);
             emit StageChanged(tableId, table.stage, address(0), 0);
             return;
@@ -155,6 +161,7 @@ contract Escrow {
         table.stage = Stage.Confirming;
         table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
 
+        emit PlayerJoined(tableId, msg.sender, 2, msg.value);
         emit TableJoined(tableId, msg.sender, msg.value);
         emit TableReady(tableId, table.player1, table.player2, table.pot);
         emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
@@ -175,6 +182,7 @@ contract Escrow {
         }
 
         emit PlayerConfirmed(tableId, msg.sender);
+        emit ActionSubmitted(tableId, msg.sender, "confirm", 0);
 
         if (table.confirmed1 && table.confirmed2) {
             table.handId += 1;
@@ -277,6 +285,7 @@ contract Escrow {
 
         table.pot += msg.value;
         emit StreetAntePaid(tableId, table.handId, msg.sender, msg.value, table.stage);
+        emit ActionSubmitted(tableId, msg.sender, "street_ante", msg.value);
 
         if (table.streetAntePaid1 && table.streetAntePaid2) {
             Stage nextStage = table.stage == Stage.SeedReady ? Stage.Preflop : table.stage;
@@ -291,6 +300,7 @@ contract Escrow {
 
         table.actionsThisStage += 1;
         emit PlayerChecked(tableId, msg.sender);
+        emit ActionSubmitted(tableId, msg.sender, "check", 0);
 
         if (table.actionsThisStage >= 2) {
             _advanceStage(tableId, table);
@@ -312,6 +322,7 @@ contract Escrow {
         table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
 
         emit PlayerBet(tableId, msg.sender, msg.value);
+        emit ActionSubmitted(tableId, msg.sender, "bet", msg.value);
         emit StageChanged(tableId, table.stage, table.turn, table.actionDeadline);
     }
 
@@ -326,6 +337,7 @@ contract Escrow {
         table.actionsThisStage = 2;
 
         emit PlayerCalled(tableId, msg.sender, msg.value);
+        emit ActionSubmitted(tableId, msg.sender, "call", msg.value);
         _advanceStage(tableId, table);
     }
 
@@ -335,6 +347,7 @@ contract Escrow {
 
         address winner = _opponent(table, msg.sender);
         emit PlayerFolded(tableId, msg.sender, winner);
+        emit ActionSubmitted(tableId, msg.sender, "fold", 0);
         _settle(tableId, table, winner);
     }
 
@@ -611,6 +624,7 @@ contract Escrow {
         }
 
         emit TableSettled(tableId, winner, payout, developerFee);
+        emit HandFinished(tableId, winner, payout, developerFee);
         emit StageChanged(tableId, table.stage, address(0), 0);
     }
 

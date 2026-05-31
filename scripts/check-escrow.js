@@ -82,12 +82,36 @@ async function main() {
     "unpause()"
   ];
 
+  const requiredEvents = [
+    "TableCreated(bytes32,address,uint256)",
+    "PlayerJoined(bytes32,address,uint8,uint256)",
+    "PlayerConfirmed(bytes32,address)",
+    "SeedCommitted(bytes32,uint256,address,bytes32)",
+    "SeedRevealed(bytes32,uint256,address,string)",
+    "HandSeedReady(bytes32,uint256,bytes32)",
+    "StageChanged(bytes32,uint8,address,uint256)",
+    "ActionSubmitted(bytes32,address,string,uint256)",
+    "PlayerTimedOut(bytes32,address,address)",
+    "PlayerFolded(bytes32,address,address)",
+    "HandFinished(bytes32,address,uint256,uint256)",
+    "WinningsClaimed(address,uint256)"
+  ];
+
   console.log("");
   console.log("Required function selectors:");
   const selectorResults = requiredSelectors.map((signature) => {
     const selector = ethers.id(signature).slice(2, 10);
     const found = code.includes(selector);
     statusLine(signature, found, `0x${selector}`);
+    return { signature, found };
+  });
+
+  console.log("");
+  console.log("Required event topics:");
+  const eventResults = requiredEvents.map((signature) => {
+    const topic = ethers.id(signature).slice(2);
+    const found = code.includes(topic);
+    statusLine(signature, found, `0x${topic.slice(0, 8)}...${topic.slice(-8)}`);
     return { signature, found };
   });
 
@@ -122,6 +146,7 @@ async function main() {
 
   if (
     selectorResults.some((item) => !item.found) ||
+    eventResults.some((item) => !item.found) ||
     BigInt(feeBps) !== EXPECTED_DEVELOPER_FEE_BPS ||
     BigInt(timeout) !== EXPECTED_TIMEOUT ||
     BigInt(defaultStake) <= 0n ||

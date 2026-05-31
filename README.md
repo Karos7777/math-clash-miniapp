@@ -156,6 +156,7 @@ node --check public/app.js
 Get-Content functions\_middleware.js | node --input-type=module --check
 npm run check:storage
 npm run check:fair
+npm run check:poker-flow
 npm run check:miniapp
 ```
 
@@ -163,6 +164,8 @@ After deploying and setting `GAME_CONTRACT_ADDRESS`:
 
 ```bash
 npm run check:escrow
+# Optional real Base Sepolia E2E; needs DEPLOYER_PRIVATE_KEY and enough testnet ETH.
+npm run check:base-sepolia-flow
 ```
 
 ## URLs To Verify

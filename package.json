@@ -11,6 +11,8 @@
     "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
     "check:storage": "node scripts/check-storage.js",
     "check:fair": "node scripts/check-provably-fair.js",
+    "check:poker-flow": "hardhat run scripts/check-poker-flow.js",
+    "check:base-sepolia-flow": "hardhat run scripts/check-base-sepolia-flow.js --network baseSepolia",
     "check:escrow": "node scripts/check-escrow.js",
     "check:miniapp": "node scripts/check-miniapp.js",
     "check:matchmaking": "node scripts/check-matchmaking.js",

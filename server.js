@@ -364,11 +364,11 @@ function handleTableSync(req, rawTableId, res) {
           prepareFairHand(table, handId);
         }
       }
-
       const player1 = normalizeAddress(body.player1);
       const player2 = normalizeAddress(body.player2);
       if (player1) table.player1 = player1;
       if (player2) table.player2 = player2;
+      applyChainHandSeed(table, body.handSeed);
 
       const winner = normalizeAddress(body.winner);
       if (winner) table.winner = winner;
@@ -655,6 +655,38 @@ function finalizeFairDeck(table) {
     [player2]: [deck[1], deck[3]]
   };
   table.communityCards = deck.slice(4, 9);
+}
+
+function finalizeFairDeckFromSeed(table, seed) {
+  const player1 = normalizeAddress(table.player1);
+  const player2 = normalizeAddress(table.player2);
+  const deck = shuffleDeck(seed);
+  table.fair.seed = seed;
+  table.fair.deckHash = deckHash(deck);
+  table.fair.finalDeck = deck;
+  table.deck = deck;
+  table.playerCards = {
+    [player1]: [deck[0], deck[2]],
+    [player2]: [deck[1], deck[3]]
+  };
+  table.communityCards = deck.slice(4, 9);
+}
+
+function applyChainHandSeed(table, handSeed) {
+  if (!handSeed || typeof handSeed !== "object" || !table.handId) return;
+  ensureFairHand(table, Number(table.handId));
+  const player1 = normalizeAddress(table.player1);
+  const player2 = normalizeAddress(table.player2);
+  const commit1 = normalizeBytes32(handSeed.commit1);
+  const commit2 = normalizeBytes32(handSeed.commit2);
+  if (commit1 && commit1 !== zeroBytes32()) table.fair.commits[player1] = commit1;
+  if (commit2 && commit2 !== zeroBytes32()) table.fair.commits[player2] = commit2;
+  if (handSeed.revealed1 && handSeed.secret1) table.fair.reveals[player1] = String(handSeed.secret1);
+  if (handSeed.revealed2 && handSeed.secret2) table.fair.reveals[player2] = String(handSeed.secret2);
+  const seed = normalizeBytes32(handSeed.seed);
+  if (handSeed.ready && seed && seed !== zeroBytes32()) {
+    finalizeFairDeckFromSeed(table, seed);
+  }
 }
 
 function publicTable(table, viewer) {
