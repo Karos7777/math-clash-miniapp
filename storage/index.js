@@ -6,7 +6,7 @@ const DEFAULT_SOCIAL_TASKS = {
     id: "share_result",
     type: "share_result",
     title: "Share result on Farcaster",
-    description: "Share your Brain Clash result and add the cast URL for review.",
+    description: "Share your Poker Clash result and add the cast URL for review.",
     xpReward: 20,
     repeatable: true,
     active: true
@@ -15,7 +15,7 @@ const DEFAULT_SOCIAL_TASKS = {
     id: "invite_friend",
     type: "invite_friend",
     title: "Invite a friend",
-    description: "Invite a friend to play Brain Clash and submit proof for review.",
+    description: "Invite a friend to play Poker Clash and submit proof for review.",
     xpReward: 50,
     repeatable: true,
     active: true

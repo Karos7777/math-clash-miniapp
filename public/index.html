@@ -6,12 +6,12 @@
     <title>__APP_NAME__</title>
     <meta
       name="description"
-      content="1v1 speed battles on Farcaster with Base escrow payouts."
+      content="A 1v1 on-chain poker table where every bet and call sends real ETH into the hand pot."
     >
     <meta property="og:title" content="__APP_NAME__">
     <meta
       property="og:description"
-      content="Beat your rival on speed, accuracy, and streaks."
+      content="Find a low-limit table, bet real ETH into the pot, call or fold, and settle each hand on-chain."
     >
     <meta property="og:image" content="__APP_URL__/assets/og.png">
     <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
@@ -25,206 +25,180 @@
         <div class="brand">
           <img src="/assets/icon.png" alt="" class="brand-mark">
           <div>
-            <p class="eyebrow">Base Sepolia Arena</p>
-            <h1>Brain Clash</h1>
+            <p class="eyebrow">Base Sepolia Poker Table</p>
+            <h1>Poker Clash</h1>
           </div>
         </div>
         <div class="top-actions">
-          <button class="miniapp-action" id="saveMiniApp" type="button" hidden>
-            Save
-          </button>
-          <button class="miniapp-action" id="shareMiniApp" type="button" hidden>
-            Share
-          </button>
-          <button class="wallet-pill" id="connectWallet" type="button">
-            Connect
-          </button>
+          <button class="miniapp-action" id="saveMiniApp" type="button" hidden>Save</button>
+          <button class="miniapp-action" id="shareMiniApp" type="button" hidden>Share</button>
+          <button class="wallet-pill" id="connectWallet" type="button">Connect</button>
         </div>
       </header>
 
       <main class="layout">
-        <section class="play-surface" aria-live="polite">
-          <div class="arena-head">
-            <div>
-              <p class="eyebrow">Stake</p>
-              <strong><span id="entryFeeLabel">0.0001</span> <span id="tokenLabel">ETH</span></strong>
+        <section class="table-select-panel">
+          <div>
+            <p class="eyebrow">Choose table</p>
+            <strong>Low Limit 6-Max</strong>
+            <span>Buy-in 0.0001 ETH - ante 0.00001 ETH - Base Sepolia</span>
+          </div>
+          <button id="chooseTableButton" type="button">Enter 6-seat table</button>
+        </section>
+
+        <section class="play-surface">
+          <div class="table-room">
+            <div class="table-hud">
+              <span id="phaseLabel">Lobby</span>
+              <strong id="roundPot">0 ETH pot</strong>
+              <span id="timeoutLabel">Waiting</span>
             </div>
-            <div>
-              <p class="eyebrow">Timer</p>
-              <strong id="timer">--</strong>
-            </div>
-            <div>
-              <p class="eyebrow">Score</p>
-              <strong id="score">0</strong>
+
+            <div class="poker-table" aria-label="Poker table">
+              <div class="table-rail"></div>
+              <div class="table-felt">
+                <div class="dealer-button">D</div>
+                <div class="community-cards" aria-hidden="true">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <div class="pot-mark">
+                  <span>Pot</span>
+                  <strong id="potMark">0</strong>
+                </div>
+              </div>
+              <div class="seat-grid" id="seatGrid"></div>
             </div>
           </div>
 
-          <div class="arena-visual" aria-hidden="true">
-            <img src="/assets/arena.svg" alt="">
+          <div class="match-panel">
+            <p class="status-line" id="statusLine">Enter the low-limit table, choose a seat, then send the buy-in transaction.</p>
+            <div class="question" id="actionTitle">Choose table</div>
+
+            <div class="action-grid">
+              <label>
+                <span>Low limit buy-in</span>
+                <input id="stakeInput" type="text" inputmode="decimal" value="0.0001">
+              </label>
+              <button id="joinButton" type="button">Sit here</button>
+
+              <button id="topUpButton" type="button">Top up</button>
+              <button id="payAnteButton" type="button">Confirm ante</button>
+
+              <label>
+                <span>Hidden hand</span>
+                <select id="numberSelect"></select>
+              </label>
+              <button id="commitButton" type="button">Commit</button>
+
+              <label>
+                <span>Bet / raise amount</span>
+                <input id="betInput" type="text" inputmode="decimal" value="0.00001">
+              </label>
+              <button id="betButton" type="button">Bet</button>
+
+              <button id="checkButton" type="button">Check</button>
+              <button id="callButton" type="button">Call</button>
+              <button id="raiseButton" type="button">Raise</button>
+              <button id="foldButton" type="button">Fold</button>
+              <button id="revealButton" type="button">Reveal</button>
+              <button id="timeoutButton" type="button">Timeout</button>
+              <button id="cashOutButton" type="button">Cash out</button>
+              <button id="claimButton" type="button">Claim fallback</button>
+            </div>
           </div>
 
-          <div class="match-panel" id="matchPanel">
-            <p class="status-line" id="matchStatus">Pick a token, difficulty, and enter the arena.</p>
-            <div class="question" id="question">Ready?</div>
-            <button class="ready-action" id="readyButton" type="button" hidden>
-              Ready
-            </button>
-            <form class="answer-row" id="answerForm">
-              <input
-                id="answerInput"
-                type="text"
-                inputmode="text"
-                autocomplete="off"
-                placeholder="Answer"
-                disabled
-              >
-              <button id="submitAnswer" type="submit" disabled>Hit</button>
-            </form>
-          </div>
-
-          <div class="versus" id="versus">
+          <div class="versus">
             <div class="fighter">
-              <span class="fighter-name" id="playerName">You</span>
-              <span class="fighter-score" id="playerMeta">0 solved</span>
+              <span class="fighter-name" id="player1Name">Player 1</span>
+              <span class="fighter-score" id="player1Stack">0 ETH</span>
             </div>
             <div class="vs-mark">VS</div>
             <div class="fighter rival">
-              <span class="fighter-name" id="rivalName">Waiting</span>
-              <span class="fighter-score" id="rivalMeta">0 solved</span>
+              <span class="fighter-name" id="player2Name">Player 2</span>
+              <span class="fighter-score" id="player2Stack">0 ETH</span>
             </div>
           </div>
         </section>
 
         <aside class="side-panel">
           <section class="control-block">
-            <p class="eyebrow">Mode</p>
-            <div class="segmented" id="modeControls" role="tablist" aria-label="Mode">
-              <button class="segment active" data-mode="math" type="button">Math</button>
-              <button class="segment" data-mode="quiz" type="button">Quiz</button>
-            </div>
-          </section>
-
-          <section class="control-block" id="quizCategoryBlock" hidden>
-            <p class="eyebrow">Quiz categories</p>
-            <div class="category-grid" id="quizCategories" aria-label="Quiz categories"></div>
+            <p class="eyebrow">Contract</p>
+            <div class="contract-box" id="contractAddress">Not configured</div>
           </section>
 
           <section class="control-block">
-            <p class="eyebrow">Token</p>
-            <div class="segmented" id="tokenControls" role="tablist" aria-label="Token">
-              <button class="segment active" data-token="ETH" type="button">ETH</button>
-              <button class="segment" data-token="USDC" type="button">USDC</button>
-              <button class="segment" data-token="USDT" type="button">USDT</button>
-            </div>
+            <p class="eyebrow">Current bet</p>
+            <strong id="currentBet">0 ETH</strong>
           </section>
 
           <section class="control-block">
-            <p class="eyebrow">Difficulty</p>
-            <div class="segmented vertical" id="difficultyControls" role="tablist" aria-label="Difficulty">
-              <button class="segment" data-difficulty="easy" type="button">Easy</button>
-              <button class="segment active" data-difficulty="medium" type="button">Medium</button>
-              <button class="segment" data-difficulty="hard" type="button">Hard</button>
-            </div>
+            <p class="eyebrow">Your hidden hand</p>
+            <div class="contract-box" id="commitInfo">No local commit yet.</div>
           </section>
 
           <section class="control-block">
-            <button class="primary-action" id="payAndPlay" type="button">
-              Pay & Play
-            </button>
-            <button class="secondary-action" id="demoPlay" type="button">
-              Demo Clash
-            </button>
-            <button class="secondary-action" id="cancelMatch" type="button" hidden>
-              Cancel / Refund
-            </button>
-            <p class="payment-note" id="paymentStatus">Escrow not configured.</p>
+            <p class="eyebrow">Fallback claim</p>
+            <strong id="pendingWithdrawal">0 ETH</strong>
           </section>
         </aside>
 
-        <section class="dev-panel" id="devPanel" hidden>
-          <div class="section-title">
-            <p class="eyebrow">Dev Mode</p>
-            <button id="resetDevState" type="button" class="ghost-button">Reset</button>
-          </div>
-          <div class="dev-controls">
-            <button class="segment active" data-dev-player="player1" type="button">player1</button>
-            <button class="segment" data-dev-player="player2" type="button">player2</button>
-            <button class="segment" data-dev-player="player3" type="button">player3</button>
-          </div>
-        </section>
-
         <section class="stats-panel">
-          <div class="stat-grid" id="statsGrid">
+          <div class="stat-grid">
             <div>
-              <span>Matches</span>
-              <strong id="statMatches">0</strong>
+              <span>Hand</span>
+              <strong id="roundNumber">0</strong>
             </div>
             <div>
-              <span>Wins</span>
-              <strong id="statWins">0</strong>
+              <span>Buy-in</span>
+              <strong id="maxRounds">--</strong>
             </div>
             <div>
-              <span>Best</span>
-              <strong id="statBest">0</strong>
+              <span>Ante</span>
+              <strong id="roundAnte">0</strong>
             </div>
             <div>
-              <span>Accuracy</span>
-              <strong id="statAccuracy">0%</strong>
+              <span>Fee</span>
+              <strong id="feeBps">2%</strong>
             </div>
           </div>
         </section>
 
-        <section class="xp-panel">
+        <section class="leaderboard-panel history-panel">
           <div class="section-title">
-            <p class="eyebrow">XP</p>
-            <strong id="xpLevel">Level 1</strong>
+            <p class="eyebrow">Table history</p>
+            <button id="refreshButton" type="button" class="ghost-button">Refresh</button>
           </div>
-          <div class="xp-summary">
-            <strong id="xpTotal">0 XP</strong>
-            <span>XP may be used for future rewards if the project continues.</span>
-          </div>
-          <ol class="xp-history" id="xpHistory"></ol>
-        </section>
-
-        <section class="quests-panel">
-          <div class="section-title">
-            <p class="eyebrow">Quests</p>
-            <button id="refreshQuests" type="button" class="ghost-button">Refresh</button>
-          </div>
-          <div class="quests-list" id="questsList"></div>
-        </section>
-
-        <section class="leaderboard-panel">
-          <div class="section-title">
-            <p class="eyebrow">Leaderboard</p>
-            <button id="refreshLeaderboard" type="button" class="ghost-button">Refresh</button>
-          </div>
-          <div class="leaderboard-tools">
-            <div class="segmented compact" id="leaderboardSort">
-              <button class="segment active" data-sort="top" type="button">Top</button>
-              <button class="segment" data-sort="worst" type="button">Worst</button>
-            </div>
-            <input id="leaderboardSearch" type="search" placeholder="Find wallet">
-          </div>
-          <ol class="leaderboard" id="leaderboard"></ol>
+          <div class="stack-chart" id="stackChart"></div>
+          <ol class="leaderboard" id="eventLog"></ol>
         </section>
 
         <section class="chat-panel">
           <div class="section-title">
-            <p class="eyebrow">Chat</p>
-            <button id="refreshChat" type="button" class="ghost-button">Refresh</button>
+            <p class="eyebrow">Lobby chat</p>
           </div>
-          <div class="last-chat" id="lastChat">No messages yet.</div>
-          <form class="chat-form" id="chatForm">
-            <input id="chatInput" type="text" maxlength="180" placeholder="Looking for medium mode">
+          <div class="last-chat" id="lobbyLastChat">No messages yet.</div>
+          <form class="chat-form" id="lobbyChatForm">
+            <input id="lobbyChatInput" type="text" maxlength="180" placeholder="I am waiting at low limit">
             <button type="submit">Send</button>
           </form>
-          <ol class="chat-list" id="chatList"></ol>
+
+          <div class="section-title chat-title">
+            <p class="eyebrow">Table chat</p>
+          </div>
+          <div class="last-chat" id="tableLastChat">No table messages yet.</div>
+          <form class="chat-form" id="tableChatForm">
+            <input id="tableChatInput" type="text" maxlength="180" placeholder="Ready for next hand">
+            <button type="submit">Send</button>
+          </form>
         </section>
       </main>
     </div>
 
-    <script src="/config.js?v=fc5"></script>
-    <script type="module" src="/app.js?v=fc5"></script>
+    <script src="/config.js?v=poker4"></script>
+    <script type="module" src="/app.js?v=poker4"></script>
   </body>
 </html>

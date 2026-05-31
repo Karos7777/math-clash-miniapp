@@ -1,10 +1,11 @@
 const CONFIG = {
-  appName: "Brain Clash",
+  appName: "Poker Clash",
   appUrl: window.location.origin,
+  gameContractAddress: "",
   escrowAddress: "",
-  entryFeeLabel: "0.1",
-  ethEntryFeeLabel: "0.0001",
-  developerFeeBps: 400,
+  defaultStakeEth: "0.0001",
+  defaultBetEth: "0.00001",
+  developerFeeBps: 200,
   chain: {
     id: 84532,
     hex: "0x14a34",
@@ -12,15 +13,20 @@ const CONFIG = {
     rpcUrl: "https://sepolia.base.org",
     explorerUrl: "https://sepolia-explorer.base.org"
   },
-  tokens: {
-    ETH: "native",
-    USDC: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    USDT: ""
-  },
-  demoMode: true,
   ...(window.MATH_CLASH_CONFIG || {})
 };
 
+const CONTRACT_ADDRESS = CONFIG.gameContractAddress || CONFIG.escrowAddress || "";
+const MAX_SEATS = 6;
+const TABLE_STATES = [
+  "WAITING",
+  "HAND_ANTE",
+  "HAND_COMMIT",
+  "HAND_BET",
+  "HAND_REVEAL",
+  "HAND_SETTLED",
+  "TABLE_CLOSED"
+];
 const BASE_CHAIN = {
   id: Number(CONFIG.chain?.id || 84532),
   hex: CONFIG.chain?.hex || `0x${Number(CONFIG.chain?.id || 84532).toString(16)}`,
@@ -29,245 +35,196 @@ const BASE_CHAIN = {
   explorerUrl: CONFIG.chain?.explorerUrl || "https://sepolia-explorer.base.org"
 };
 
-const TOKENS = {
-  ETH: {
-    symbol: "ETH",
-    address: "0x0000000000000000000000000000000000000000",
-    decimals: 18,
-    native: true
-  },
-  USDC: {
-    symbol: "USDC",
-    address: CONFIG.tokens?.USDC || "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    decimals: 6
-  },
-  USDT: {
-    symbol: "USDT",
-    address: CONFIG.tokens?.USDT || "",
-    decimals: 6
-  }
-};
-
-const ENTRY_UNITS = 100000n;
-const NATIVE_ENTRY_UNITS = 100000000000000n;
-const BPS_DENOMINATOR = 10000n;
-const DEVELOPER_FEE_BPS = BigInt(CONFIG.developerFeeBps || 400);
-const DEFAULT_QUIZ_CATEGORIES = [
-  { id: "crypto", label: "Crypto" },
-  { id: "gaming", label: "Gaming" },
-  { id: "logic", label: "Logic" },
-  { id: "culture", label: "Culture" }
-];
-
-const ERC20_ABI = ["function approve(address spender, uint256 value) external returns (bool)"];
-const ESCROW_ABI = [
-  "function deposit(bytes32 matchId, address token) external",
-  "function cancelUnmatched(bytes32 matchId) external"
+const CONTRACT_ABI = [
+  "function joinGame() payable",
+  "function joinSeat(uint8 seat) payable",
+  "function topUpStack() payable",
+  "function payAnte() payable",
+  "function commitNumber(bytes32 commitHash)",
+  "function check()",
+  "function bet(uint256 amount) payable",
+  "function call() payable",
+  "function raiseBet(uint256 amount) payable",
+  "function fold()",
+  "function reveal(uint8 number, bytes32 salt)",
+  "function timeout()",
+  "function cashOutStack()",
+  "function claimWinnings()",
+  "function gameState() view returns (uint8)",
+  "function getSeats() view returns (address[6])",
+  "function seatCount() view returns (uint8)",
+  "function stacks(address) view returns (uint256)",
+  "function pendingWithdrawals(address) view returns (uint256)",
+  "function handAnte() view returns (uint256)",
+  "function minBuyIn() view returns (uint256)",
+  "function roundNumber() view returns (uint256)",
+  "function roundPot() view returns (uint256)",
+  "function currentBet() view returns (uint256)",
+  "function currentActorSeat() view returns (uint8)",
+  "function timeoutAt() view returns (uint256)",
+  "function hasPaidAnte(address) view returns (bool)",
+  "function isActiveInHand(address) view returns (bool)",
+  "function hasCommitted(address) view returns (bool)",
+  "function hasRevealed(address) view returns (bool)",
+  "function hasFolded(address) view returns (bool)",
+  "function handContribution(address) view returns (uint256)",
+  "function revealedNumbers(address) view returns (uint8)",
+  "function DEVELOPER_FEE_BPS() view returns (uint256)",
+  "event PlayerJoined(address indexed player, uint8 indexed seat, uint256 buyIn)",
+  "event HandStarted(uint256 indexed handNumber, uint256 handPot)",
+  "event AntePaid(address indexed player, uint256 amount, uint8 activePlayers)",
+  "event PlayerBet(address indexed player, uint256 amount)",
+  "event PlayerCalled(address indexed player, uint256 amount)",
+  "event PlayerRaised(address indexed player, uint256 amount, uint256 newCurrentBet)",
+  "event PlayerFolded(address indexed player)",
+  "event PlayerChecked(address indexed player)",
+  "event HandSettled(uint256 indexed handNumber, address indexed winner, uint256 grossPot, uint256 playerPayout, uint256 developerFee)",
+  "event PayoutSent(address indexed to, uint256 amount)",
+  "event PayoutCredited(address indexed to, uint256 amount)",
+  "event StacksUpdated(address[6] seats, uint256[6] stacks)"
 ];
 
 const state = {
   sdk: null,
-  fid: null,
-  username: "",
   provider: null,
   ethers: null,
-  account: null,
-  devMode: false,
-  devPlayerId: localStorage.getItem("math-clash:dev-player") || "player1",
-  profile: null,
-  xp: null,
-  tasks: [],
-  leaderboardSort: "top",
-  selectedToken: "ETH",
-  mode: localStorage.getItem("math-clash:mode") || "math",
-  quizCategoryOptions: DEFAULT_QUIZ_CATEGORIES,
-  selectedQuizCategories: loadStoredQuizCategories(),
-  difficulty: "medium",
-  match: null,
-  playerId: null,
-  localScore: 0,
-  timerId: null,
+  account: "",
+  readContract: null,
+  writeContract: null,
+  tableSelected: localStorage.getItem("poker-clash:selected-table") === "low-6max",
+  selectedSeat: normalizeSeatIndex(localStorage.getItem("poker-clash:selected-seat")),
+  table: null,
+  busy: false,
   pollId: null,
   chatPollId: null,
-  busy: false
+  eventsAttached: false,
+  history: []
 };
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
-  connectWallet: $("#connectWallet"),
+  chooseTableButton: $("#chooseTableButton"),
   saveMiniApp: $("#saveMiniApp"),
   shareMiniApp: $("#shareMiniApp"),
-  tokenControls: $("#tokenControls"),
-  modeControls: $("#modeControls"),
-  quizCategoryBlock: $("#quizCategoryBlock"),
-  quizCategories: $("#quizCategories"),
-  difficultyControls: $("#difficultyControls"),
-  payAndPlay: $("#payAndPlay"),
-  demoPlay: $("#demoPlay"),
-  cancelMatch: $("#cancelMatch"),
-  paymentStatus: $("#paymentStatus"),
-  tokenLabel: $("#tokenLabel"),
-  entryFeeLabel: $("#entryFeeLabel"),
-  timer: $("#timer"),
-  score: $("#score"),
-  matchStatus: $("#matchStatus"),
-  question: $("#question"),
-  answerForm: $("#answerForm"),
-  answerInput: $("#answerInput"),
-  submitAnswer: $("#submitAnswer"),
-  readyButton: $("#readyButton"),
-  playerName: $("#playerName"),
-  playerMeta: $("#playerMeta"),
-  rivalName: $("#rivalName"),
-  rivalMeta: $("#rivalMeta"),
-  statMatches: $("#statMatches"),
-  statWins: $("#statWins"),
-  statBest: $("#statBest"),
-  statAccuracy: $("#statAccuracy"),
-  leaderboard: $("#leaderboard"),
-  refreshLeaderboard: $("#refreshLeaderboard"),
-  leaderboardSort: $("#leaderboardSort"),
-  leaderboardSearch: $("#leaderboardSearch"),
-  refreshChat: $("#refreshChat"),
-  chatForm: $("#chatForm"),
-  chatInput: $("#chatInput"),
-  chatList: $("#chatList"),
-  lastChat: $("#lastChat"),
-  devPanel: $("#devPanel"),
-  resetDevState: $("#resetDevState"),
-  xpLevel: $("#xpLevel"),
-  xpTotal: $("#xpTotal"),
-  xpHistory: $("#xpHistory"),
-  questsList: $("#questsList"),
-  refreshQuests: $("#refreshQuests")
+  connectWallet: $("#connectWallet"),
+  phaseLabel: $("#phaseLabel"),
+  roundPot: $("#roundPot"),
+  potMark: $("#potMark"),
+  timeoutLabel: $("#timeoutLabel"),
+  statusLine: $("#statusLine"),
+  actionTitle: $("#actionTitle"),
+  stakeInput: $("#stakeInput"),
+  joinButton: $("#joinButton"),
+  topUpButton: $("#topUpButton"),
+  payAnteButton: $("#payAnteButton"),
+  numberSelect: $("#numberSelect"),
+  commitButton: $("#commitButton"),
+  betInput: $("#betInput"),
+  betButton: $("#betButton"),
+  checkButton: $("#checkButton"),
+  callButton: $("#callButton"),
+  raiseButton: $("#raiseButton"),
+  foldButton: $("#foldButton"),
+  revealButton: $("#revealButton"),
+  timeoutButton: $("#timeoutButton"),
+  cashOutButton: $("#cashOutButton"),
+  claimButton: $("#claimButton"),
+  refreshButton: $("#refreshButton"),
+  seatGrid: $("#seatGrid"),
+  player1Name: $("#player1Name"),
+  player2Name: $("#player2Name"),
+  player1Stack: $("#player1Stack"),
+  player2Stack: $("#player2Stack"),
+  contractAddress: $("#contractAddress"),
+  currentBet: $("#currentBet"),
+  commitInfo: $("#commitInfo"),
+  pendingWithdrawal: $("#pendingWithdrawal"),
+  roundNumber: $("#roundNumber"),
+  maxRounds: $("#maxRounds"),
+  roundAnte: $("#roundAnte"),
+  feeBps: $("#feeBps"),
+  stackChart: $("#stackChart"),
+  eventLog: $("#eventLog"),
+  lobbyLastChat: $("#lobbyLastChat"),
+  tableLastChat: $("#tableLastChat"),
+  lobbyChatForm: $("#lobbyChatForm"),
+  tableChatForm: $("#tableChatForm"),
+  lobbyChatInput: $("#lobbyChatInput"),
+  tableChatInput: $("#tableChatInput")
 };
+elements.stakeField = elements.stakeInput.closest("label");
+elements.numberField = elements.numberSelect.closest("label");
+elements.betField = elements.betInput.closest("label");
 
-boot();
+boot().catch(showFatalError);
 
 async function boot() {
-  updateSelectedTokenLabels();
-  renderModeControls();
+  elements.stakeInput.value = CONFIG.defaultStakeEth || "0.0001";
+  elements.betInput.value = CONFIG.defaultBetEth || "0.00001";
+  renderNumberOptions();
   bindEvents();
-  refreshPaymentControls();
-  await loadGameOptions();
-  await initMiniApp();
-  await restoreSession();
-  await loadLeaderboard();
-  await loadChat();
-  startChatPolling();
+  renderTableChoice();
+  initMiniApp().catch((error) => console.info("Mini App init skipped:", error.message));
+  await initReadContract();
+  await refreshTable();
+  await refreshChats();
+  startPolling();
 }
 
 function bindEvents() {
+  elements.chooseTableButton.addEventListener("click", chooseTable);
   elements.connectWallet.addEventListener("click", connectWallet);
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
-  elements.payAndPlay.addEventListener("click", payAndPlay);
-  elements.readyButton.addEventListener("click", markReady);
-  elements.cancelMatch.addEventListener("click", cancelCurrentMatch);
-  elements.demoPlay.addEventListener("click", () => joinArena({ demo: true, txHash: "" }));
-  elements.refreshLeaderboard.addEventListener("click", loadLeaderboard);
-  elements.leaderboardSort.addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-sort]");
-    if (!button) return;
-    state.leaderboardSort = button.dataset.sort;
-    updateSegments(elements.leaderboardSort, button);
-    await loadLeaderboard();
-  });
-  elements.leaderboardSearch.addEventListener("input", debounce(loadLeaderboard, 250));
-  elements.refreshChat.addEventListener("click", loadChat);
-  elements.chatForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await sendChatMessage();
-  });
-  elements.refreshQuests.addEventListener("click", loadProfile);
-  elements.resetDevState.addEventListener("click", resetDevState);
-  elements.questsList.addEventListener("click", async (event) => {
-    const card = event.target.closest("[data-task-id]");
-    if (!card) return;
-    const taskId = card.dataset.taskId;
-    const input = card.querySelector("[data-proof-input]");
-    const status = card.querySelector("[data-claim-status]");
+  elements.refreshButton.addEventListener("click", refreshTable);
+  elements.joinButton.addEventListener("click", findTable);
+  elements.topUpButton.addEventListener("click", topUpStack);
+  elements.payAnteButton.addEventListener("click", payAnte);
+  elements.commitButton.addEventListener("click", commitNumber);
+  elements.betButton.addEventListener("click", bet);
+  elements.checkButton.addEventListener("click", () => sendAction("check", "Checking..."));
+  elements.callButton.addEventListener("click", callBet);
+  elements.raiseButton.addEventListener("click", raiseBet);
+  elements.foldButton.addEventListener("click", () => sendAction("fold", "Folding hand..."));
+  elements.revealButton.addEventListener("click", reveal);
+  elements.timeoutButton.addEventListener("click", () => sendAction("timeout", "Claiming timeout..."));
+  elements.cashOutButton.addEventListener("click", () => sendAction("cashOutStack", "Cashing out table stack..."));
+  elements.claimButton.addEventListener("click", () => sendAction("claimWinnings", "Claiming fallback payout..."));
+  elements.lobbyChatForm.addEventListener("submit", (event) => sendChat(event, "lobby"));
+  elements.tableChatForm.addEventListener("submit", (event) => sendChat(event, "table"));
+}
 
-    if (event.target.closest("[data-share-result]")) {
-      await shareResultCast();
-      return;
-    }
+function chooseTable() {
+  state.tableSelected = true;
+  localStorage.setItem("poker-clash:selected-table", "low-6max");
+  renderTableChoice();
+  setStatus("Low Limit 6-Max table entered. Choose an open seat.");
+  if (state.table) renderTable();
+  refreshControls();
+}
 
-    if (event.target.closest("[data-claim-task]")) {
-      try {
-        await claimQuest(taskId, input?.value || "");
-        if (status) status.textContent = "Claim submitted for review.";
-      } catch (error) {
-        if (status) status.textContent = error.message;
-      }
-    }
-  });
+function renderTableChoice() {
+  elements.chooseTableButton.textContent = state.tableSelected ? "Low Limit table entered" : "Enter 6-seat table";
+}
 
-  document.querySelectorAll("[data-dev-player]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      state.devPlayerId = button.dataset.devPlayer;
-      localStorage.setItem("math-clash:dev-player", state.devPlayerId);
-      updateDevButtons();
-      await restoreSession();
-    });
-  });
-
-  elements.tokenControls.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-token]");
-    if (!button || !canChangeGameOptions()) return;
-    state.selectedToken = button.dataset.token;
-    updateSegments(elements.tokenControls, button);
-    updateSelectedTokenLabels();
-    refreshPaymentControls();
-  });
-
-  elements.modeControls.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-mode]");
-    if (!button || !canChangeGameOptions()) return;
-    state.mode = button.dataset.mode === "quiz" ? "quiz" : "math";
-    localStorage.setItem("math-clash:mode", state.mode);
-    renderModeControls();
-  });
-
-  elements.quizCategories.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-quiz-category]");
-    if (!button || !canChangeGameOptions()) return;
-    toggleQuizCategory(button.dataset.quizCategory);
-  });
-
-  elements.difficultyControls.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-difficulty]");
-    if (!button || !canChangeGameOptions()) return;
-    state.difficulty = button.dataset.difficulty;
-    updateSegments(elements.difficultyControls, button);
-  });
-
-  elements.answerForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await submitCurrentAnswer();
-  });
+function renderNumberOptions() {
+  elements.numberSelect.innerHTML = "";
+  for (let number = 1; number <= 10; number += 1) {
+    const option = document.createElement("option");
+    option.value = String(number);
+    option.textContent = String(number);
+    elements.numberSelect.append(option);
+  }
 }
 
 async function initMiniApp() {
   try {
     const module = await import("https://esm.sh/@farcaster/miniapp-sdk");
     state.sdk = module.sdk;
-    await loadFarcasterContext();
     await state.sdk.actions.ready();
     refreshMiniAppActions();
   } catch (error) {
-    console.info("Farcaster SDK not available in this environment:", error.message);
-  }
-}
-
-async function loadFarcasterContext() {
-  try {
-    const context = await Promise.resolve(state.sdk?.context);
-    const user = context?.user || {};
-    state.fid = user.fid || null;
-    state.username = user.username || user.displayName || "";
-  } catch (error) {
-    console.info("Farcaster context unavailable:", error.message);
+    console.info("Farcaster SDK unavailable:", error.message);
   }
 }
 
@@ -283,395 +240,739 @@ async function saveMiniApp() {
       setStatus("Open in Farcaster to save this Mini App.");
       return;
     }
-
     await state.sdk.actions.addMiniApp();
-    setStatus("Mini App saved in Farcaster.");
+    setStatus("Mini App saved.");
   } catch (error) {
-    setStatus(getMiniAppActionErrorMessage(error, "Could not save Mini App."));
+    setStatus(error.message || "Could not save Mini App.");
   }
 }
 
 async function shareMiniApp() {
-  const appUrl = CONFIG.appUrl || window.location.origin;
-
   try {
     if (typeof state.sdk?.actions?.composeCast !== "function") {
       setStatus("Open in Farcaster to share this Mini App.");
       return;
     }
-
     await state.sdk.actions.composeCast({
-      text: `I am playing ${CONFIG.appName}. Beat me in a 1v1 brain battle.`,
-      embeds: [appUrl]
+      text: `I am waiting at the ${CONFIG.appName} low-limit 6-max table.`,
+      embeds: [CONFIG.appUrl || window.location.origin]
     });
   } catch (error) {
-    setStatus(getMiniAppActionErrorMessage(error, "Could not open Farcaster composer."));
+    setStatus(error.message || "Could not share Mini App.");
   }
 }
 
-async function shareResultCast() {
-  const appUrl = CONFIG.appUrl || window.location.origin;
-  const me = getMe();
-  const score = me ? `${me.score} pts` : `a ${CONFIG.appName} run`;
-  const text = `I scored ${score} in ${CONFIG.appName}. Try to beat me in a 1v1 battle.`;
+async function initReadContract() {
+  elements.contractAddress.textContent = isAddress(CONTRACT_ADDRESS)
+    ? shortAddress(CONTRACT_ADDRESS)
+    : "Preview mode";
 
-  try {
-    if (typeof state.sdk?.actions?.composeCast !== "function") {
-      setStatus("Open in Farcaster to share your result.");
-      return;
-    }
-
-    await state.sdk.actions.composeCast({
-      text,
-      embeds: [appUrl]
-    });
-    setStatus("After publishing, paste the cast URL in the quest proof field.");
-  } catch (error) {
-    setStatus(getMiniAppActionErrorMessage(error, "Could not open Farcaster composer."));
+  if (!isAddress(CONTRACT_ADDRESS)) {
+    setStatus("Table preview is open. Real buy-ins turn on after the table contract is connected.");
+    refreshControls();
+    return;
   }
+
+  const { Contract, JsonRpcProvider } = await getEthers();
+  const provider = new JsonRpcProvider(BASE_CHAIN.rpcUrl, BASE_CHAIN.id);
+  state.readContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
+  attachContractEvents();
 }
 
 async function connectWallet() {
-  setStatus("Connecting wallet...");
   try {
     state.provider = await getWalletProvider();
-    if (!state.provider) {
-      setStatus("No wallet provider found.");
+    if (!state.provider?.request) {
+      setStatus("Open in Farcaster/Base app or a browser with Rabby/Coinbase Wallet.");
       return;
     }
 
     const accounts = await requestAccounts(state.provider);
     state.account = accounts[0];
-    localStorage.setItem("math-clash:last-wallet", state.account);
+    localStorage.setItem("poker-clash:last-wallet", state.account);
     elements.connectWallet.textContent = shortAddress(state.account);
+
+    await ensureBaseChain(state.provider);
+
+    if (isAddress(CONTRACT_ADDRESS)) {
+      const { BrowserProvider, Contract } = await getEthers();
+      const browserProvider = new BrowserProvider(state.provider);
+      const signer = await browserProvider.getSigner();
+      state.writeContract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    }
+
     setStatus("Wallet connected.");
-    refreshPaymentControls();
-    await restoreSession();
+    await refreshTable();
   } catch (error) {
-    setStatus(getWalletErrorMessage(error, "Wallet connection failed."));
+    setStatus(getWalletError(error, "Wallet connection failed."));
   }
-}
-
-async function restoreSession() {
-  try {
-    const response = await api(`/api/me?${new URLSearchParams(getIdentityPayload())}`);
-    applyProfile(response);
-
-    if (response.match) {
-      applyMatch(response.match);
-      if (response.match.status !== "finished" && response.match.status !== "refunded") {
-        startPolling();
-      }
-    } else if (!state.match) {
-      setStatus("Pick a token, difficulty, and enter the arena.");
-      setQuestion("Ready?");
-    }
-  } catch (error) {
-    console.info("Session restore skipped:", error.message);
-  }
-}
-
-async function loadProfile() {
-  const response = await api(`/api/tasks?${new URLSearchParams(getIdentityPayload())}`);
-  applyProfile(response);
-}
-
-async function loadGameOptions() {
-  try {
-    const health = await api("/api/health");
-    if (Array.isArray(health.quizCategories) && health.quizCategories.length) {
-      state.quizCategoryOptions = health.quizCategories;
-    }
-  } catch (error) {
-    console.info("Game options loaded from defaults:", error.message);
-  }
-  ensureQuizCategoriesSelected();
-  renderModeControls();
-}
-
-function applyProfile(response) {
-  if (typeof response.devMode !== "undefined") {
-    state.devMode = Boolean(response.devMode);
-  }
-  state.profile = response.player || state.profile;
-  state.xp = response.xp || state.xp;
-  state.tasks = response.tasks || state.tasks || [];
-  renderDevMode();
-  renderXp(response.xpEvents || []);
-  renderQuests();
-}
-
-function getIdentityPayload() {
-  const wallet = state.account || localStorage.getItem("math-clash:last-wallet") || "";
-  return {
-    fid: state.fid || "",
-    username: state.username || "",
-    wallet,
-    devPlayerId: state.devPlayerId || ""
-  };
 }
 
 async function getWalletProvider() {
-  const injectedProvider = await getInjectedWalletProvider();
-  if (injectedProvider) return injectedProvider;
-
   if (state.sdk?.wallet?.getEthereumProvider) {
     try {
-      return await state.sdk.wallet.getEthereumProvider();
+      const miniAppProvider = await withTimeout(state.sdk.wallet.getEthereumProvider(), 5000);
+      if (miniAppProvider?.request) return miniAppProvider;
     } catch (error) {
       console.info("Mini App wallet unavailable:", error.message);
     }
   }
-  return window.ethereum || null;
+
+  const candidates = [];
+  if (window.rabby) candidates.push(window.rabby);
+  if (window.coinbaseWalletExtension) candidates.push(window.coinbaseWalletExtension);
+  if (window.ethereum?.providers?.length) candidates.push(...window.ethereum.providers);
+  if (window.ethereum) candidates.push(window.ethereum);
+  return (
+    candidates.find((provider) => provider?.isRabby) ||
+    candidates.find((provider) => provider?.isCoinbaseWallet) ||
+    candidates.find((provider) => provider?.request) ||
+    null
+  );
 }
 
 async function requestAccounts(provider) {
-  if (!provider?.request) {
-    throw new Error("Selected wallet provider does not support requests.");
-  }
-
   const existing = await provider.request({ method: "eth_accounts" }).catch(() => []);
   if (existing.length) return existing;
   const accounts = await provider.request({ method: "eth_requestAccounts" });
-  if (!accounts?.length) {
-    throw new Error("No account returned by wallet.");
-  }
+  if (!accounts?.length) throw new Error("No wallet account returned.");
   return accounts;
 }
 
-async function payAndPlay() {
-  if (state.busy) return;
-
-  try {
-    state.busy = true;
-    refreshPaymentControls();
-
-    if (!isUsableEscrow()) {
-      setStatus("Set escrowAddress in public/config.js first.");
-      return;
-    }
-
-    if (!isSelectedTokenConfigured()) {
-      setStatus(`${state.selectedToken} is not configured for ${BASE_CHAIN.name}.`);
-      return;
-    }
-
-    if (!state.account) {
-      await connectWallet();
-    }
-
-    if (!state.provider || !state.account) {
-      setStatus("Connect a wallet before entering.");
-      return;
-    }
-
-    await ensureBaseChain(state.provider);
-    const token = TOKENS[state.selectedToken];
-
-    if (!token.native) {
-      setStatus(`Approving ${getEntryFeeLabel(token.symbol)} ${token.symbol} for escrow...`);
-      const approveTxHash = await approveEscrow(state.provider, state.account, token);
-      setStatus(`Waiting for approval confirmation: ${shortTx(approveTxHash)}...`);
-      await waitForTransactionSuccess(state.provider, approveTxHash);
-    }
-
-    setStatus("Reserving a match...");
-    const reservation = await reservePaidMatch();
-
-    setStatus("Depositing entry into escrow...");
-    const txHash = await depositEntry(state.provider, state.account, token, reservation.payment.escrowId);
-    setStatus(`Waiting for escrow confirmation: ${shortTx(txHash)}...`);
-    await waitForTransactionSuccess(state.provider, txHash);
-    setStatus(`Escrow funded: ${shortTx(txHash)}.`);
-    await joinArena({ demo: false, txHash, reservation });
-  } catch (error) {
-    setStatus(getWalletErrorMessage(error, "Payment failed."));
-  } finally {
-    state.busy = false;
-    refreshPaymentControls();
-  }
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("Wallet provider timed out")), timeoutMs);
+    })
+  ]);
 }
 
-async function cancelCurrentMatch() {
-  const match = state.match;
-  if (!match?.payment?.escrowId) return;
-
-  const availableAt = Number(match.payment.cancelAvailableAt || 0);
-  if (availableAt && Date.now() < availableAt) {
-    const minutes = Math.ceil((availableAt - Date.now()) / 60000);
-    setStatus(`Refund unlocks in about ${minutes} min if no opponent joins.`);
+async function findTable() {
+  if (!state.tableSelected) {
+    chooseTable();
+    return;
+  }
+  if (!isSelectedSeatOpen()) {
+    setStatus("Choose an open seat first.");
     return;
   }
 
+  await ensureWallet();
+  const seat = state.selectedSeat;
+  const value = parseEthInput(elements.stakeInput.value);
+  await sendTx(`Taking seat ${seat + 1} at the low-limit 6-max table...`, () =>
+    state.writeContract.joinSeat(seat, { value })
+  );
+}
+
+async function topUpStack() {
+  await ensureWallet();
+  const value = parseEthInput(elements.stakeInput.value);
+  await sendTx("Adding ETH to table stack...", () => state.writeContract.topUpStack({ value }));
+}
+
+async function payAnte() {
+  await ensureWallet();
+  const value = state.table?.handAnte || parseEthInput(CONFIG.defaultBetEth || "0.00001");
+  await sendTx("Confirming hand start with ante transaction...", () => state.writeContract.payAnte({ value }));
+}
+
+async function commitNumber() {
+  await ensureWallet();
+  const { hexlify, randomBytes, solidityPackedKeccak256 } = await getEthers();
+  const number = Number(elements.numberSelect.value);
+  const salt = hexlify(randomBytes(32));
+  const commitHash = solidityPackedKeccak256(["uint8", "bytes32"], [number, salt]);
+  saveLocalCommit(number, salt);
+  await sendTx("Submitting hidden hand commit...", () => state.writeContract.commitNumber(commitHash));
+}
+
+async function bet() {
+  await ensureWallet();
+  const value = parseEthInput(elements.betInput.value);
+  await sendTx("Sending ETH bet into the hand pot...", () => state.writeContract.bet(value, { value }));
+}
+
+async function callBet() {
+  const due = callDue();
+  if (due <= 0n) {
+    setStatus("No bet to call.");
+    return;
+  }
+  await sendTx("Calling with matching ETH into the pot...", () => state.writeContract["call"]({ value: due }));
+}
+
+async function raiseBet() {
+  await ensureWallet();
+  const value = parseEthInput(elements.betInput.value);
+  await sendTx("Raising with a new ETH transaction...", () => state.writeContract.raiseBet(value, { value }));
+}
+
+async function reveal() {
+  const commit = getLocalCommit();
+  if (!commit) {
+    setStatus("No local hidden hand found. Commit on this device before revealing.");
+    return;
+  }
+  await sendTx("Revealing hidden hand...", () =>
+    state.writeContract.reveal(Number(commit.number), commit.salt)
+  );
+}
+
+async function sendAction(functionName, message) {
+  await sendTx(message || `Sending ${functionName} transaction...`, () => state.writeContract[functionName]());
+}
+
+async function sendTx(message, buildTx) {
   try {
+    await ensureWallet();
     state.busy = true;
-    refreshPaymentControls();
-    refreshMatchActions();
-
-    if (!state.account) {
-      await connectWallet();
-    }
-    if (!state.provider || !state.account) {
-      setStatus("Connect the funding wallet to cancel.");
-      return;
-    }
-
-    await ensureBaseChain(state.provider);
-    setStatus("Submitting unmatched refund...");
-    const txHash = await sendContractCall({
-      provider: state.provider,
-      from: state.account,
-      to: CONFIG.escrowAddress,
-      abi: ESCROW_ABI,
-      functionName: "cancelUnmatched",
-      args: [match.payment.escrowId]
-    });
-    await waitForTransactionSuccess(state.provider, txHash);
-    const response = await api(`/api/matches/${match.matchId}/refund`, {
-      method: "POST",
-      body: {
-        ...getIdentityPayload(),
-        playerId: state.playerId,
-        txHash
-      }
-    });
-    applyMatch(response);
-    setStatus(`Refund submitted: ${shortTx(txHash)}.`);
+    refreshControls();
+    setStatus(message);
+    const tx = await buildTx();
+    setStatus(`Transaction pending: ${shortTx(tx.hash)}...`);
+    await tx.wait();
+    setStatus(`Transaction confirmed: ${shortTx(tx.hash)}.`);
+    await refreshTable();
   } catch (error) {
-    setStatus(getWalletErrorMessage(error, "Refund failed."));
+    setStatus(getWalletError(error, "Transaction failed."));
   } finally {
     state.busy = false;
-    refreshPaymentControls();
-    refreshMatchActions();
+    refreshControls();
   }
 }
 
-async function getInjectedWalletProvider() {
-  const candidates = await discoverInjectedProviders();
-  if (!candidates.length) return null;
-
-  const rabby = candidates.find(({ provider, info }) => {
-    const name = `${info?.name || ""} ${info?.rdns || ""}`.toLowerCase();
-    return provider?.isRabby || name.includes("rabby");
-  });
-  if (rabby) return rabby.provider;
-
-  const browserWallet = candidates.find(({ provider }) => provider?.request);
-  return browserWallet?.provider || null;
+async function ensureWallet() {
+  if (!state.tableSelected) {
+    chooseTable();
+  }
+  if (!isAddress(CONTRACT_ADDRESS)) {
+    throw new Error("Set GAME_CONTRACT_ADDRESS first.");
+  }
+  if (!state.writeContract || !state.account) {
+    await connectWallet();
+  }
+  if (!state.writeContract || !state.account) {
+    throw new Error("Connect wallet first.");
+  }
 }
 
-async function discoverInjectedProviders() {
-  const candidates = [];
-  const seen = new Set();
+async function refreshTable() {
+  if (!state.readContract) {
+    renderEmpty();
+    return;
+  }
 
-  const addCandidate = (provider, info = null) => {
-    if (!provider || seen.has(provider)) return;
-    seen.add(provider);
-    candidates.push({ provider, info });
+  const [
+    gameState,
+    seats,
+    seatCount,
+    handNumber,
+    handAnte,
+    minBuyIn,
+    handPot,
+    currentBet,
+    currentActorSeat,
+    timeoutAt,
+    feeBps
+  ] = await Promise.all([
+    state.readContract.gameState(),
+    state.readContract.getSeats(),
+    state.readContract.seatCount(),
+    state.readContract.roundNumber(),
+    state.readContract.handAnte(),
+    state.readContract.minBuyIn(),
+    state.readContract.roundPot(),
+    state.readContract.currentBet(),
+    state.readContract.currentActorSeat(),
+    state.readContract.timeoutAt(),
+    state.readContract.DEVELOPER_FEE_BPS()
+  ]);
+
+  const seatDetails = await Promise.all(
+    Array.from(seats).map(async (address, index) => {
+      const occupied = isAddress(address) && address !== zeroAddress();
+      if (!occupied) {
+        return emptySeat(index);
+      }
+      const [stack, paidAnte, active, folded, contribution, committed, revealed, number] = await Promise.all([
+        state.readContract.stacks(address),
+        state.readContract.hasPaidAnte(address),
+        state.readContract.isActiveInHand(address),
+        state.readContract.hasFolded(address),
+        state.readContract.handContribution(address),
+        state.readContract.hasCommitted(address),
+        state.readContract.hasRevealed(address),
+        state.readContract.revealedNumbers(address)
+      ]);
+      return {
+        index,
+        address,
+        occupied,
+        stack,
+        paidAnte,
+        active,
+        folded,
+        contribution,
+        committed,
+        revealed,
+        number: Number(number)
+      };
+    })
+  );
+
+  const mySeat = state.account
+    ? seatDetails.find((seat) => sameAddress(seat.address, state.account))
+    : null;
+  const pending = state.account ? await state.readContract.pendingWithdrawals(state.account) : 0n;
+
+  state.table = {
+    stateId: Number(gameState),
+    phase: TABLE_STATES[Number(gameState)] || "UNKNOWN",
+    seats: seatDetails,
+    seatCount: Number(seatCount),
+    handNumber: Number(handNumber),
+    handAnte,
+    minBuyIn,
+    handPot,
+    currentBet,
+    currentActorSeat: Number(currentActorSeat),
+    timeoutAt: Number(timeoutAt),
+    feeBps: Number(feeBps),
+    mySeat,
+    pending
   };
 
-  addCandidate(window.rabby, { name: "Rabby" });
-
-  if (window.ethereum?.providers?.length) {
-    window.ethereum.providers.forEach((provider) => addCandidate(provider));
-  }
-  addCandidate(window.ethereum);
-
-  if (typeof window.addEventListener === "function" && typeof window.dispatchEvent === "function") {
-    const onProvider = (event) => {
-      addCandidate(event.detail?.provider, event.detail?.info);
-    };
-
-    window.addEventListener("eip6963:announceProvider", onProvider);
-    window.dispatchEvent(new Event("eip6963:requestProvider"));
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    window.removeEventListener("eip6963:announceProvider", onProvider);
-  }
-
-  return candidates.filter(({ provider }) => provider?.request);
+  syncSelectedSeat();
+  pushStackHistory(state.table);
+  renderTable();
 }
 
-function getWalletErrorMessage(error, fallback) {
-  const message = String(error?.message || error || "");
-  if (error?.code === 4001 || message.toLowerCase().includes("user rejected")) {
-    return "Wallet request rejected.";
-  }
-  if (message.includes("Cannot read properties of undefined")) {
-    return "Wallet provider failed. Refresh the page and try Rabby again.";
-  }
-  return message || fallback;
+function emptySeat(index) {
+  return {
+    index,
+    address: zeroAddress(),
+    occupied: false,
+    stack: 0n,
+    paidAnte: false,
+    active: false,
+    folded: false,
+    contribution: 0n,
+    committed: false,
+    revealed: false,
+    number: 0
+  };
 }
 
-function getMiniAppActionErrorMessage(error, fallback) {
-  const message = String(error?.message || error || "");
-  if (message.includes("RejectedByUser") || message.toLowerCase().includes("rejected")) {
-    return "Farcaster request rejected.";
-  }
-  if (message.includes("InvalidDomainManifestJson")) {
-    return "Farcaster manifest needs account association for this domain.";
-  }
-  return message || fallback;
+function renderEmpty() {
+  elements.phaseLabel.textContent = "Lobby";
+  elements.roundPot.textContent = "0 ETH pot";
+  elements.potMark.textContent = "0";
+  elements.timeoutLabel.textContent = "Waiting";
+  elements.actionTitle.textContent = !state.tableSelected
+    ? "Enter table"
+    : normalizeSeatIndex(state.selectedSeat) === -1
+      ? "Pick a chair"
+      : "Ready to sit";
+  renderSeats(Array.from({ length: MAX_SEATS }, (_, index) => emptySeat(index)));
+  refreshControls();
 }
 
-async function approveEscrow(provider, from, token) {
-  return sendContractCall({
-    provider,
-    from,
-    to: token.address,
-    abi: ERC20_ABI,
-    functionName: "approve",
-    args: [CONFIG.escrowAddress, ENTRY_UNITS]
+function renderTable() {
+  const table = state.table;
+  elements.phaseLabel.textContent = formatPhase(table.phase);
+  elements.roundPot.textContent = `${formatEth(table.handPot)} pot`;
+  elements.potMark.textContent = formatCompactEth(table.handPot);
+  elements.currentBet.textContent = formatEth(table.currentBet);
+  elements.pendingWithdrawal.textContent = formatEth(table.pending);
+  elements.roundNumber.textContent = String(table.handNumber);
+  elements.maxRounds.textContent = `${table.seatCount}/6`;
+  elements.roundAnte.textContent = formatEth(table.handAnte);
+  elements.feeBps.textContent = `${table.feeBps / 100}%`;
+  elements.timeoutLabel.textContent = table.timeoutAt ? formatTimeout(table.timeoutAt) : "--";
+
+  const occupied = table.seats.filter((seat) => seat.occupied);
+  elements.player1Name.textContent = occupied[0] ? shortAddress(occupied[0].address) : "Open seat";
+  elements.player2Name.textContent = occupied[1] ? shortAddress(occupied[1].address) : "Open seat";
+  elements.player1Stack.textContent = occupied[0] ? formatEth(occupied[0].stack) : "0 ETH";
+  elements.player2Stack.textContent = occupied[1] ? formatEth(occupied[1].stack) : "0 ETH";
+
+  const commit = getLocalCommit();
+  elements.commitInfo.textContent = commit
+    ? `Hidden hand ${commit.number}, salt saved locally`
+    : table.mySeat?.committed
+      ? "Committed on-chain. Reveal needs local salt."
+      : "No hidden hand yet.";
+
+  elements.actionTitle.textContent = getActionTitle(table);
+  renderSeats(table.seats);
+  renderEventLog();
+  renderChart();
+  refreshControls();
+}
+
+function renderSeats(seats) {
+  elements.seatGrid.innerHTML = "";
+  seats.forEach((seat) => {
+    const mine = state.account && sameAddress(seat.address, state.account);
+    const card = document.createElement("div");
+    card.className = [
+      "seat-card",
+      seat.occupied ? "occupied" : "open",
+      seat.active ? "active" : "",
+      seat.folded ? "folded" : "",
+      state.selectedSeat === seat.index && !seat.occupied ? "selected" : "",
+      mine ? "mine" : ""
+    ].filter(Boolean).join(" ");
+    card.dataset.seat = String(seat.index + 1);
+    const label = mine
+      ? "You"
+      : seat.occupied
+        ? shortAddress(seat.address)
+        : state.selectedSeat === seat.index
+          ? "Selected"
+          : "Empty";
+    const detail = seat.occupied
+      ? `${seat.active ? "Playing" : seat.paidAnte ? "Ante paid" : "Waiting"} - ${formatCompactEth(seat.stack)} ETH`
+      : state.selectedSeat === seat.index ? "Ready to sit" : "Sit here";
+    card.innerHTML = `
+      <span class="chair-icon" aria-hidden="true"></span>
+      <strong>${label}</strong>
+      <span>${detail}</span>
+    `;
+    if (!seat.occupied) {
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Choose ${seatPositionName(seat.index)} seat`);
+      card.addEventListener("click", () => selectSeat(seat.index));
+      card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectSeat(seat.index);
+        }
+      });
+    }
+    elements.seatGrid.append(card);
   });
 }
 
-async function depositEntry(provider, from, token, escrowId) {
-  return sendContractCall({
-    provider,
-    from,
-    to: CONFIG.escrowAddress,
-    abi: ESCROW_ABI,
-    functionName: "deposit",
-    args: [escrowId, token.address],
-    value: token.native ? toHexQuantity(getEntryUnits(token.symbol)) : "0x0"
-  });
-}
-
-async function sendContractCall({ provider, from, to, abi, functionName, args, value = "0x0" }) {
-  const { Interface } = await getEthers();
-  const iface = new Interface(abi);
-  const data = iface.encodeFunctionData(functionName, args);
-  return provider.request({
-    method: "eth_sendTransaction",
-    params: [{ from, to, value, data }]
-  });
-}
-
-async function waitForTransactionSuccess(provider, txHash) {
-  const receipt = await waitForTransactionReceipt(provider, txHash);
-  const status = normalizeHexQuantity(receipt?.status);
-  if (status !== "0x1") {
-    throw new Error(`Transaction failed: ${shortTx(txHash)}.`);
+function selectSeat(index) {
+  if (!state.tableSelected) {
+    setStatus("Enter the 6-seat table first, then choose a chair.");
+    return;
   }
-  return receipt;
+
+  const seatIndex = normalizeSeatIndex(index);
+  if (seatIndex === -1) {
+    setStatus("Choose one of the open chairs.");
+    return;
+  }
+  const seat = state.table?.seats?.[seatIndex];
+  if (seat?.occupied) {
+    setStatus("That chair is already taken. Choose another open chair.");
+    return;
+  }
+
+  state.selectedSeat = seatIndex;
+  localStorage.setItem("poker-clash:selected-seat", String(seatIndex));
+  setStatus("Chair selected. Press Sit here to send the buy-in transaction.");
+  elements.actionTitle.textContent = state.table ? getActionTitle(state.table) : "Ready to sit";
+  renderSeats(state.table?.seats || Array.from({ length: MAX_SEATS }, (_, seat) => emptySeat(seat)));
+  refreshControls();
 }
 
-async function waitForTransactionReceipt(provider, txHash) {
-  const startedAt = Date.now();
-  const timeoutMs = 120000;
+function syncSelectedSeat() {
+  const seatIndex = normalizeSeatIndex(state.selectedSeat);
+  if (seatIndex === -1) {
+    state.selectedSeat = -1;
+    return;
+  }
 
-  while (Date.now() - startedAt < timeoutMs) {
-    const receipt = await provider
-      .request({
-        method: "eth_getTransactionReceipt",
-        params: [txHash]
+  const seat = state.table?.seats?.[seatIndex];
+  if (!seat || (seat.occupied && !sameAddress(seat.address, state.account))) {
+    state.selectedSeat = -1;
+    localStorage.removeItem("poker-clash:selected-seat");
+  }
+}
+
+function isSelectedSeatOpen() {
+  const seatIndex = normalizeSeatIndex(state.selectedSeat);
+  if (!state.tableSelected || seatIndex === -1) return false;
+  const seat = state.table?.seats?.[seatIndex];
+  return seat ? !seat.occupied : true;
+}
+
+function getActionTitle(table) {
+  if (!state.tableSelected) return "Enter table";
+  if (!table.mySeat && !isSelectedSeatOpen()) return "Pick a chair";
+  if (!table.mySeat) return "Ready to sit";
+  if (table.phase === "WAITING") return table.seatCount < 2 ? "Waiting for player" : "Start hand";
+  if (table.phase === "HAND_ANTE") {
+    if (!table.mySeat) return "Players pay ante";
+    return table.mySeat.paidAnte ? "Waiting for antes" : "Start hand";
+  }
+  if (table.phase === "HAND_COMMIT") return table.mySeat?.committed ? "Waiting for players" : "Pick strength";
+  if (table.phase === "HAND_BET") return isMyTurn() ? "Your move" : "Opponent move";
+  if (table.phase === "HAND_REVEAL") return table.mySeat?.revealed ? "Waiting showdown" : "Show cards";
+  if (table.phase === "HAND_SETTLED") return "Hand paid out";
+  if (table.phase === "TABLE_CLOSED") return "Table closed";
+  return formatPhase(table.phase);
+}
+
+function refreshControls() {
+  const table = state.table;
+  const hasContract = Boolean(state.readContract) && isAddress(CONTRACT_ADDRESS);
+  const connected = Boolean(state.account && state.writeContract);
+  const phase = table?.phase || "WAITING";
+  const seated = Boolean(table?.mySeat);
+  const selectedOpen = isSelectedSeatOpen();
+  const myTurn = isMyTurn();
+  const myDue = callDue();
+  const currentBet = table?.currentBet || 0n;
+
+  setButtonsDisabled(true);
+
+  elements.joinButton.textContent = seated
+    ? "Seated"
+    : selectedOpen
+      ? "Sit here"
+      : "Choose chair";
+
+  elements.joinButton.disabled =
+    state.busy || !state.tableSelected || !hasContract || seated || !selectedOpen || table?.seatCount >= MAX_SEATS;
+  elements.topUpButton.disabled =
+    state.busy || !connected || !seated || phase === "TABLE_CLOSED";
+  elements.payAnteButton.disabled =
+    state.busy || !connected || !seated || table?.mySeat?.paidAnte ||
+    !(phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED") ||
+    table?.seatCount < 2;
+  elements.commitButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_COMMIT" || table?.mySeat?.committed || !table?.mySeat?.active;
+  elements.checkButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet > 0n;
+  elements.betButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet > 0n;
+  elements.callButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || myDue <= 0n;
+  elements.raiseButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn || currentBet <= 0n;
+  elements.foldButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_BET" || !myTurn;
+  elements.revealButton.disabled =
+    state.busy || !connected || !seated || phase !== "HAND_REVEAL" || table?.mySeat?.revealed || !table?.mySeat?.active;
+  elements.timeoutButton.disabled =
+    state.busy || !connected || !seated || !table?.timeoutAt || Date.now() / 1000 < table.timeoutAt;
+  elements.cashOutButton.disabled =
+    state.busy || !connected || !seated || table?.mySeat?.active ||
+    !(phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED" || phase === "TABLE_CLOSED");
+  elements.claimButton.disabled =
+    state.busy || !connected || !table?.pending || table.pending <= 0n;
+
+  refreshActionVisibility({ phase, seated, selectedOpen, myTurn, currentBet, table });
+}
+
+function setButtonsDisabled(disabled) {
+  [
+    elements.joinButton,
+    elements.topUpButton,
+    elements.payAnteButton,
+    elements.commitButton,
+    elements.betButton,
+    elements.checkButton,
+    elements.callButton,
+    elements.raiseButton,
+    elements.foldButton,
+    elements.revealButton,
+    elements.timeoutButton,
+    elements.cashOutButton,
+    elements.claimButton
+  ].forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+function refreshActionVisibility({ phase, seated, myTurn, currentBet, table }) {
+  const waitingForSeat = !seated;
+  const anteStep =
+    seated &&
+    table?.seatCount >= 2 &&
+    (phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED");
+  const commitStep = seated && phase === "HAND_COMMIT";
+  const bettingStep = seated && phase === "HAND_BET";
+  const revealStep = seated && phase === "HAND_REVEAL";
+  const showTableTools = seated && phase !== "TABLE_CLOSED";
+  const canTimeout = seated && table?.timeoutAt && Date.now() / 1000 >= table.timeoutAt;
+  const canCashOut =
+    seated &&
+    !table?.mySeat?.active &&
+    (phase === "WAITING" || phase === "HAND_ANTE" || phase === "HAND_SETTLED" || phase === "TABLE_CLOSED");
+  const canClaim = Boolean(table?.pending && table.pending > 0n);
+
+  setVisible(elements.stakeField, waitingForSeat);
+  setVisible(elements.joinButton, waitingForSeat);
+  setVisible(elements.topUpButton, showTableTools && !commitStep && !bettingStep && !revealStep);
+  setVisible(elements.payAnteButton, anteStep);
+  setVisible(elements.numberField, commitStep);
+  setVisible(elements.commitButton, commitStep);
+  setVisible(elements.betField, bettingStep && myTurn);
+  setVisible(elements.betButton, bettingStep && myTurn && currentBet <= 0n);
+  setVisible(elements.checkButton, bettingStep && myTurn && currentBet <= 0n);
+  setVisible(elements.callButton, bettingStep && myTurn && currentBet > 0n);
+  setVisible(elements.raiseButton, bettingStep && myTurn && currentBet > 0n);
+  setVisible(elements.foldButton, bettingStep && myTurn);
+  setVisible(elements.revealButton, revealStep);
+  setVisible(elements.timeoutButton, canTimeout);
+  setVisible(elements.cashOutButton, canCashOut);
+  setVisible(elements.claimButton, canClaim);
+}
+
+function setVisible(element, visible) {
+  if (element) element.hidden = !visible;
+}
+
+function isMyTurn() {
+  if (!state.table?.mySeat) return false;
+  return state.table.currentActorSeat === state.table.mySeat.index;
+}
+
+function callDue() {
+  const table = state.table;
+  if (!table?.mySeat || table.currentBet <= table.mySeat.contribution) return 0n;
+  return table.currentBet - table.mySeat.contribution;
+}
+
+function pushStackHistory(table) {
+  const occupied = table.seats.filter((seat) => seat.occupied);
+  const first = occupied[0]?.stack || 0n;
+  const second = occupied[1]?.stack || 0n;
+  const key = `${table.phase}:${table.handNumber}:${first}:${second}:${table.handPot}:${table.seatCount}`;
+  if (state.history[state.history.length - 1]?.key === key) return;
+  state.history.push({
+    key,
+    phase: table.phase,
+    hand: table.handNumber,
+    stack1: first,
+    stack2: second,
+    pot: table.handPot
+  });
+  state.history = state.history.slice(-12);
+}
+
+function renderChart() {
+  elements.stackChart.innerHTML = "";
+  const max = state.history.reduce((value, item) => {
+    return item.stack1 > value ? item.stack1 : item.stack2 > value ? item.stack2 : value;
+  }, 1n);
+
+  state.history.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "chart-row";
+    row.innerHTML = `
+      <span>H${item.hand}</span>
+      <div class="chart-bar p1" style="width:${barWidth(item.stack1, max)}%"></div>
+      <div class="chart-bar p2" style="width:${barWidth(item.stack2, max)}%"></div>
+    `;
+    elements.stackChart.append(row);
+  });
+}
+
+function renderEventLog() {
+  elements.eventLog.innerHTML = "";
+  state.history.slice(-6).reverse().forEach((item) => {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="rank">H${item.hand}</span>
+      <span class="name">${escapeHtml(formatPhase(item.phase))} - pot ${formatEth(item.pot)}</span>
+      <span class="points">${formatCompactEth(item.stack1)} / ${formatCompactEth(item.stack2)}</span>
+    `;
+    elements.eventLog.append(li);
+  });
+}
+
+function startPolling() {
+  clearInterval(state.pollId);
+  state.pollId = window.setInterval(() => {
+    refreshTable().catch((error) => console.info("Refresh skipped:", error.message));
+  }, 5000);
+  clearInterval(state.chatPollId);
+  state.chatPollId = window.setInterval(() => {
+    refreshChats().catch((error) => console.info("Chat refresh skipped:", error.message));
+  }, 4000);
+}
+
+async function refreshChats() {
+  const [lobby, table] = await Promise.all([loadChat("lobby"), loadChat("table")]);
+  renderLastChat(elements.lobbyLastChat, lobby);
+  renderLastChat(elements.tableLastChat, table);
+}
+
+async function loadChat(room) {
+  try {
+    const response = await fetch(`/api/chat?room=${encodeURIComponent(room)}`, {
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data.messages) ? data.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderLastChat(element, messages) {
+  const last = messages[messages.length - 1];
+  if (!last) return;
+  element.textContent = `${last.player || "anon"}: ${last.message}`;
+}
+
+async function sendChat(event, room) {
+  event.preventDefault();
+  const input = room === "lobby" ? elements.lobbyChatInput : elements.tableChatInput;
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+
+  try {
+    await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        room,
+        message,
+        player: state.account ? shortAddress(state.account) : "guest"
       })
-      .catch(() => null);
-
-    if (receipt) return receipt;
-    await new Promise((resolve) => setTimeout(resolve, 1800));
+    });
+    await refreshChats();
+  } catch {
+    setStatus("Chat is unavailable on this server.");
   }
+}
 
-  throw new Error(`Transaction still pending: ${shortTx(txHash)}.`);
+async function ensureBaseChain(provider) {
+  const chainId = await provider.request({ method: "eth_chainId" });
+  if (chainId?.toLowerCase() === BASE_CHAIN.hex.toLowerCase()) return;
+
+  try {
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: BASE_CHAIN.hex }]
+    });
+  } catch (switchError) {
+    if (switchError.code !== 4902) throw switchError;
+    await provider.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: BASE_CHAIN.hex,
+          chainName: BASE_CHAIN.name,
+          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+          rpcUrls: [BASE_CHAIN.rpcUrl],
+          blockExplorerUrls: [BASE_CHAIN.explorerUrl]
+        }
+      ]
+    });
+  }
 }
 
 async function getEthers() {
@@ -681,780 +982,164 @@ async function getEthers() {
   return state.ethers;
 }
 
-async function ensureBaseChain(provider) {
-  const chainId = await provider.request({ method: "eth_chainId" });
-  if (chainId?.toLowerCase() === BASE_CHAIN.hex) return;
+function parseEthInput(value) {
+  const { parseEther } = state.ethers || {};
+  if (!parseEther) throw new Error("Wallet library is not ready yet.");
+  return parseEther(String(value || "0").trim() || "0");
+}
 
+function saveLocalCommit(number, salt) {
+  if (!state.account || !CONTRACT_ADDRESS) return;
+  localStorage.setItem(commitStorageKey(), JSON.stringify({ number, salt, hand: state.table?.handNumber || 0 }));
+}
+
+function getLocalCommit() {
+  if (!state.account || !CONTRACT_ADDRESS || !state.table) return null;
   try {
-    await provider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: BASE_CHAIN.hex }]
+    const parsed = JSON.parse(localStorage.getItem(commitStorageKey()) || "null");
+    return parsed?.number && parsed?.salt ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function commitStorageKey() {
+  const hand = state.table?.handNumber || 0;
+  return `poker-clash:commit:${CONTRACT_ADDRESS.toLowerCase()}:${state.account.toLowerCase()}:hand:${hand}`;
+}
+
+function attachContractEvents() {
+  if (!state.readContract || state.eventsAttached) return;
+  state.eventsAttached = true;
+
+  [
+    "PlayerJoined",
+    "HandStarted",
+    "AntePaid",
+    "PlayerBet",
+    "PlayerCalled",
+    "PlayerRaised",
+    "PlayerFolded",
+    "PlayerChecked",
+    "HandSettled",
+    "PayoutSent",
+    "PayoutCredited",
+    "StacksUpdated"
+  ].forEach((eventName) => {
+    state.readContract.on(eventName, (...args) => {
+      const event = args[args.length - 1];
+      setStatus(formatChainEvent(eventName, args, event?.log?.transactionHash));
+      refreshTable().catch((error) => console.info("Event refresh skipped:", error.message));
     });
-  } catch (switchError) {
-    if (switchError.code !== 4902) {
-      throw switchError;
-    }
-    await provider.request({
-      method: "wallet_addEthereumChain",
-      params: [
-        {
-          chainId: BASE_CHAIN.hex,
-          chainName: BASE_CHAIN.name,
-          nativeCurrency: {
-            name: "Ether",
-            symbol: "ETH",
-            decimals: 18
-          },
-          rpcUrls: [BASE_CHAIN.rpcUrl],
-          blockExplorerUrls: [BASE_CHAIN.explorerUrl]
-        }
-      ]
-    });
-  }
-}
-
-async function reservePaidMatch() {
-  const wallet = state.account;
-  return api("/api/matches/reserve", {
-    method: "POST",
-    body: {
-      ...getIdentityPayload(),
-      wallet,
-      mode: state.mode,
-      quizCategories: getSelectedQuizCategories(),
-      difficulty: state.difficulty,
-      token: state.selectedToken
-    }
   });
 }
 
-async function joinArena({ demo, txHash, reservation = null }) {
-  clearMatchLoops();
-  state.localScore = 0;
-  elements.score.textContent = "0";
-  setQuestion("Ready?");
-  setStatus(demo ? "Finding a demo rival..." : "Finding a rival...");
-
-  const wallet = state.account || getGuestWallet();
-  const response = await api("/api/matches/join", {
-    method: "POST",
-    body: {
-      ...getIdentityPayload(),
-      wallet,
-      matchId: reservation?.matchId,
-      playerId: reservation?.playerId,
-      escrowId: reservation?.payment?.escrowId,
-      mode: state.mode,
-      quizCategories: getSelectedQuizCategories(),
-      difficulty: state.difficulty,
-      token: state.selectedToken,
-      txHash,
-      demo
-    }
-  });
-
-  applyMatch(response);
-  startPolling();
+function formatChainEvent(eventName, args, txHash) {
+  const tx = txHash ? ` ${shortTx(txHash)}` : "";
+  if (eventName === "PlayerJoined") return `${shortAddress(args[0])} took seat ${Number(args[1]) + 1}.${tx}`;
+  if (eventName === "AntePaid") return `${shortAddress(args[0])} confirmed ante ${formatEth(args[1])}.${tx}`;
+  if (eventName === "PlayerBet") return `${shortAddress(args[0])} bet ${formatEth(args[1])}.${tx}`;
+  if (eventName === "PlayerCalled") return `${shortAddress(args[0])} called ${formatEth(args[1])}.${tx}`;
+  if (eventName === "PlayerRaised") return `${shortAddress(args[0])} raised ${formatEth(args[1])}.${tx}`;
+  if (eventName === "PlayerFolded") return `${shortAddress(args[0])} folded.${tx}`;
+  if (eventName === "PlayerChecked") return `${shortAddress(args[0])} checked.${tx}`;
+  if (eventName === "HandStarted") return `Hand ${args[0].toString()} is waiting for antes.${tx}`;
+  if (eventName === "HandSettled") return `Hand paid. Winner ${shortAddress(args[1])}, payout ${formatEth(args[3])}, fee ${formatEth(args[4])}.${tx}`;
+  if (eventName === "PayoutSent") return `Payout sent to ${shortAddress(args[0])}: ${formatEth(args[1])}.${tx}`;
+  if (eventName === "PayoutCredited") return `Fallback claim credited to ${shortAddress(args[0])}: ${formatEth(args[1])}.${tx}`;
+  return `${eventName.replace(/([A-Z])/g, " $1").trim()}.${tx}`;
 }
 
-async function markReady() {
-  const match = state.match;
-  if (!match || state.busy) return;
-
-  try {
-    state.busy = true;
-    refreshReadyAction();
-    const response = await api(`/api/matches/${match.matchId}/ready`, {
-      method: "POST",
-      body: {
-        ...getIdentityPayload(),
-        playerId: state.playerId
-      }
-    });
-    applyMatch(response);
-    startPolling();
-  } catch (error) {
-    setStatus(error.message || "Could not start your run.");
-  } finally {
-    state.busy = false;
-    refreshReadyAction();
-  }
+function formatPhase(value) {
+  const labels = {
+    WAITING: "Waiting",
+    HAND_ANTE: "Ante",
+    HAND_COMMIT: "Pick",
+    HAND_BET: "Betting",
+    HAND_REVEAL: "Showdown",
+    HAND_SETTLED: "Paid",
+    TABLE_CLOSED: "Closed"
+  };
+  return labels[value] || "Lobby";
 }
 
-async function submitCurrentAnswer() {
-  const match = state.match;
-  if (!match || match.status !== "active") return;
-
-  const answer = elements.answerInput.value.trim();
-  if (!answer) return;
-
-  elements.answerInput.value = "";
-  elements.submitAnswer.disabled = true;
-
-  const response = await api(`/api/matches/${match.matchId}/answer`, {
-    method: "POST",
-    body: {
-      ...getIdentityPayload(),
-      playerId: state.playerId,
-      answer
-    }
-  });
-
-  applyMatch(response.match);
+function formatTimeout(timestamp) {
+  const seconds = Math.max(0, Math.ceil(timestamp - Date.now() / 1000));
+  if (seconds <= 0) return "Now";
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
-function applyMatch(match) {
-  const previousStatus = state.match?.status;
-  const previousQuestionIndex = state.match?.currentQuestion?.index;
-
-  state.match = match;
-  state.playerId = match.playerId || state.playerId;
-  syncGameControlsFromMatch(match);
-  refreshMatchActions();
-  refreshReadyAction();
-
-  const me = getMe();
-  const rival = getRival();
-
-  if (me) {
-    state.localScore = me.score;
-    elements.score.textContent = String(me.score);
-    elements.playerName.textContent = me.name || "You";
-    elements.playerMeta.textContent = `${me.answered} solved / ${me.correct} correct`;
-  }
-
-  if (rival) {
-    elements.rivalName.textContent = rival.name || "Rival";
-    elements.rivalMeta.textContent = `${rival.answered} solved / ${rival.correct} correct`;
-  } else {
-    elements.rivalName.textContent = "Waiting";
-    elements.rivalMeta.textContent = "0 solved";
-  }
-
-  if (match.status === "waiting") {
-    setStatus("Searching opponent...");
-    setQuestion("Matchmaking");
-    toggleAnswer(false);
-  }
-
-  if (match.status === "funding") {
-    const paid = me?.paid ? "Rival is funding escrow..." : "Funding escrow...";
-    setStatus(paid);
-    setQuestion("Escrow");
-    toggleAnswer(false);
-  }
-
-  if (match.status === "matched") {
-    setStatus("Opponent found. Press Ready when you want to start.");
-    setQuestion("Ready?");
-    toggleAnswer(false);
-    if (!state.pollId) startPolling();
-  }
-
-  if (match.status === "active") {
-    if (!me?.ready || !me.runStartedAt) {
-      setStatus("Opponent found. Press Ready when you want to start.");
-      setQuestion("Ready?");
-      toggleAnswer(false);
-      if (!state.pollId) startPolling();
-      return;
-    }
-
-    if (me?.finishedAt && !match.currentQuestion) {
-      setQuestion("Done");
-      setStatus("Waiting for rival result...");
-      toggleAnswer(false);
-      if (!state.timerId) startTimer();
-      return;
-    }
-
-    const nextIndex = match.currentQuestion?.index ?? me?.answered ?? 0;
-    const shouldRenderQuestion =
-      previousStatus !== "active" ||
-      nextIndex !== previousQuestionIndex ||
-      elements.question.textContent === "Matchmaking" ||
-      elements.question.textContent === "Ready?";
-    if (shouldRenderQuestion) {
-      renderQuestion();
-    }
-    toggleAnswer(Boolean(match.currentQuestion));
-    if (match.currentQuestion) {
-      setStatus("Clash live.");
-    }
-    if (!state.timerId) {
-      startTimer();
-    }
-  }
-
-  if (match.status === "finished") {
-    renderResult();
-    toggleAnswer(false);
-    clearMatchLoops();
-    loadLeaderboard();
-    loadStats();
-    loadProfile();
-  }
-
-  if (match.status === "refunded") {
-    setStatus(`Refund marked${match.refundTxHash ? `: ${shortTx(match.refundTxHash)}` : "."}`);
-    setQuestion("Refunded");
-    toggleAnswer(false);
-    clearMatchLoops();
-  }
+function barWidth(value, max) {
+  if (max <= 0n) return 0;
+  return Number((value * 100n) / max);
 }
 
-function renderQuestion() {
-  const match = state.match;
-  if (!match || match.status !== "active") return;
-  const me = getMe();
-
-  if (!me?.ready || !me.runStartedAt) {
-    setQuestion("Ready?");
-    setStatus("Opponent found. Press Ready when you want to start.");
-    toggleAnswer(false);
-    return;
-  }
-
-  if (!match.currentQuestion) {
-    setQuestion("Done");
-    setStatus("Waiting for rival result...");
-    toggleAnswer(false);
-    return;
-  }
-
-  const question = match.currentQuestion;
-  setQuestion(question.expression.replace("*", "x"));
-  elements.submitAnswer.disabled = false;
-  elements.answerInput.disabled = false;
-  elements.answerInput.focus({ preventScroll: true });
+function formatEth(value) {
+  const formatter = state.ethers?.formatEther;
+  if (!formatter) return "0 ETH";
+  const raw = formatter(BigInt(value || 0));
+  const [whole, fraction = ""] = raw.split(".");
+  const trimmed = fraction.slice(0, 6).replace(/0+$/, "");
+  return `${trimmed ? `${whole}.${trimmed}` : whole} ETH`;
 }
 
-function renderResult() {
-  const match = state.match;
-  const me = getMe();
-
-  let line = "Draw.";
-  if (match.result?.winnerId) {
-    line = match.result.winnerId === state.playerId ? "You won." : "Rival won.";
-  }
-
-  if (match.payment?.mode === "escrow" && match.payment.payout) {
-    if (match.payment.payout.draw) {
-      line += ` Escrow refunds ${match.payment.payout.entryFee || getEntryFeeLabel(match.payment.token)} ${match.payment.token} to each player.`;
-    } else if (match.result?.winnerId === state.playerId) {
-      line += ` Payout: ${match.payment.payout.winnerPayout} ${match.payment.token}.`;
-    } else {
-      line += ` Winner payout: ${match.payment.payout.winnerPayout} ${match.payment.token}.`;
-    }
-
-    const settlement = match.payment.settlement;
-    if (settlement?.txHash) {
-      line += ` Settlement ${shortTx(settlement.txHash)}.`;
-    } else if (settlement?.status === "failed") {
-      line += " Settlement failed; resolver needs attention.";
-    } else if (settlement?.status === "resolver_not_configured") {
-      line += " Settlement not sent; resolver is not configured.";
-    } else if (settlement?.status === "submitting") {
-      line += " Settlement submitting...";
-    } else if (settlement?.status === "not_started") {
-      line += " Settlement pending.";
-    }
-  }
-
-  setStatus(line);
-  setQuestion(me ? `${me.score} pts` : "Finished");
-  elements.timer.textContent = "0s";
-}
-
-async function finishMatch() {
-  const match = state.match;
-  if (!match) return;
-  const response = await api(`/api/matches/${match.matchId}/finish`, {
-    method: "POST",
-    body: { ...getIdentityPayload(), playerId: state.playerId }
-  });
-  applyMatch(response);
-}
-
-function startPolling() {
-  clearInterval(state.pollId);
-  state.pollId = window.setInterval(async () => {
-    if (!state.match || ["finished", "refunded"].includes(state.match.status)) return;
-    const response = await api(`/api/matches/${state.match.matchId}?playerId=${state.playerId}`);
-    applyMatch(response);
-  }, 1000);
-}
-
-function startTimer() {
-  clearInterval(state.timerId);
-  updateTimer();
-  state.timerId = window.setInterval(updateTimer, 250);
-}
-
-function updateTimer() {
-  const match = state.match;
-  const me = getMe();
-  if (!match?.startedAt || !me?.runStartedAt) {
-    elements.timer.textContent = "--";
-    return;
-  }
-  const elapsed = Date.now() - me.runStartedAt;
-  const left = Math.max(0, Math.ceil(match.durationSec - elapsed / 1000));
-  elements.timer.textContent = `${left}s`;
-  if (left <= 0) {
-    toggleAnswer(false);
-  }
-}
-
-async function loadLeaderboard() {
-  const params = new URLSearchParams({
-    sort: state.leaderboardSort,
-    search: elements.leaderboardSearch.value.trim()
-  });
-  const response = await api(`/api/leaderboard?${params}`);
-  elements.leaderboard.innerHTML = "";
-
-  if (!response.leaderboard.length) {
-    const empty = document.createElement("li");
-    empty.innerHTML = `<span class="rank">-</span><span class="name">No players found</span><span class="points">0</span>`;
-    elements.leaderboard.append(empty);
-    return;
-  }
-
-  response.leaderboard.forEach((row) => {
-    const item = document.createElement("li");
-    item.innerHTML = `
-      <span class="rank">${row.rank}</span>
-      <span class="name">${escapeHtml(row.display)} - ${row.wins}W - ${row.accuracy}%</span>
-      <span class="points">${row.score}</span>
-    `;
-    elements.leaderboard.append(item);
-  });
-}
-
-async function loadChat() {
-  const response = await api("/api/chat");
-  renderChat(response.messages || [], response.lastMessage || null);
-}
-
-function startChatPolling() {
-  clearInterval(state.chatPollId);
-  state.chatPollId = window.setInterval(() => {
-    loadChat().catch((error) => console.info("Chat refresh skipped:", error.message));
-  }, 10000);
-}
-
-async function sendChatMessage() {
-  const message = elements.chatInput.value.trim();
-  if (!message) return;
-  const response = await api("/api/chat", {
-    method: "POST",
-    body: {
-      ...getIdentityPayload(),
-      message
-    }
-  });
-  elements.chatInput.value = "";
-  renderChat(response.messages || [], response.lastMessage || response.message || null);
-}
-
-function renderChat(messages, lastMessage) {
-  elements.lastChat.textContent = lastMessage
-    ? `${lastMessage.display}: ${lastMessage.text}`
-    : "No messages yet.";
-  elements.chatList.innerHTML = "";
-  messages.slice(0, 10).forEach((message) => {
-    const item = document.createElement("li");
-    item.innerHTML = `<strong>${escapeHtml(message.display)}</strong><span>${escapeHtml(message.text)}</span>`;
-    elements.chatList.append(item);
-  });
-}
-
-async function loadStats() {
-  const wallet = state.account || localStorage.getItem("math-clash:last-wallet");
-  if (!wallet) return;
-
-  const response = await api(`/api/stats/${encodeURIComponent(wallet)}`);
-  const stats = response.stats;
-  const accuracy = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
-  elements.statMatches.textContent = String(stats.matches);
-  elements.statWins.textContent = String(stats.wins);
-  elements.statBest.textContent = String(stats.bestScore);
-  elements.statAccuracy.textContent = `${accuracy}%`;
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.error || `Request failed: ${response.status}`);
-  }
-  return payload;
-}
-
-function updateSegments(container, activeButton) {
-  container.querySelectorAll(".segment").forEach((button) => {
-    button.classList.toggle("active", button === activeButton);
-  });
-}
-
-function updateActiveButton(container, dataName, value) {
-  container.querySelectorAll(`[data-${dataName}]`).forEach((button) => {
-    button.classList.toggle("active", button.dataset[dataName] === value);
-  });
-}
-
-function refreshPaymentControls() {
-  const hasEscrow = isUsableEscrow();
-  const hasToken = isSelectedTokenConfigured();
-  const lockedInMatch = !canChangeGameOptions();
-  elements.payAndPlay.disabled = state.busy || lockedInMatch || !hasEscrow || !hasToken;
-  elements.demoPlay.hidden = !CONFIG.demoMode;
-  elements.demoPlay.disabled = state.busy || lockedInMatch;
-
-  if (!hasEscrow) {
-    elements.paymentStatus.textContent = "Escrow not configured.";
-  } else if (!hasToken) {
-    elements.paymentStatus.textContent = `${state.selectedToken} token not configured for ${BASE_CHAIN.name}.`;
-  } else if (!state.account) {
-    elements.paymentStatus.textContent = `Winner gets ${getWinnerPayoutLabel(state.selectedToken)} ${state.selectedToken} on ${BASE_CHAIN.name}; developer fee ${getDeveloperFeeLabel(state.selectedToken)}.`;
-  } else {
-    elements.paymentStatus.textContent = `Ready with ${shortAddress(state.account)}. Winner payout ${getWinnerPayoutLabel(state.selectedToken)} ${state.selectedToken}.`;
-  }
-}
-
-function refreshMatchActions() {
-  const match = state.match;
-  const canCancel =
-    match?.status === "waiting" &&
-    match.payment?.mode === "escrow" &&
-    Boolean(match.payment?.cancelAvailableAt);
-  elements.cancelMatch.hidden = !canCancel;
-  if (!canCancel) return;
-
-  const availableAt = Number(match.payment.cancelAvailableAt);
-  elements.cancelMatch.disabled = state.busy || Date.now() < availableAt;
-  elements.cancelMatch.textContent =
-    Date.now() >= availableAt ? "Cancel / Refund" : "Refund unlocks later";
-}
-
-function refreshReadyAction() {
-  const match = state.match;
-  const me = getMe();
-  const canReady =
-    Boolean(match) &&
-    ["matched", "active"].includes(match.status) &&
-    Boolean(me) &&
-    !me.ready &&
-    !me.finishedAt &&
-    match.players.length >= 2;
-  elements.readyButton.hidden = !canReady;
-  elements.readyButton.disabled = state.busy || !canReady;
-}
-
-function syncGameControlsFromMatch(match) {
-  if (!match || ["finished", "refunded"].includes(match.status)) return;
-
-  state.mode = match.mode || state.mode;
-  state.difficulty = match.difficulty || state.difficulty;
-  state.selectedToken = match.payment?.token || state.selectedToken;
-  if (Array.isArray(match.quizCategories) && match.quizCategories.length) {
-    state.selectedQuizCategories = match.quizCategories;
-  }
-
-  updateActiveButton(elements.tokenControls, "token", state.selectedToken);
-  updateActiveButton(elements.difficultyControls, "difficulty", state.difficulty);
-  updateSelectedTokenLabels();
-  renderModeControls();
-  refreshPaymentControls();
-}
-
-function renderModeControls() {
-  elements.modeControls.querySelectorAll("[data-mode]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === state.mode);
-  });
-  elements.quizCategoryBlock.hidden = state.mode !== "quiz";
-  renderQuizCategories();
-}
-
-function renderQuizCategories() {
-  if (!elements.quizCategories) return;
-  ensureQuizCategoriesSelected();
-  elements.quizCategories.innerHTML = "";
-  state.quizCategoryOptions.forEach((category) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "category-pill";
-    button.dataset.quizCategory = category.id;
-    button.classList.toggle("active", state.selectedQuizCategories.includes(category.id));
-    button.textContent = category.label || category.id;
-    elements.quizCategories.append(button);
-  });
-}
-
-function toggleQuizCategory(categoryId) {
-  const id = String(categoryId || "");
-  if (!state.quizCategoryOptions.some((category) => category.id === id)) return;
-
-  const selected = new Set(getSelectedQuizCategories());
-  if (selected.has(id)) {
-    if (selected.size <= 1) {
-      setStatus("Leave at least one quiz category selected.");
-      return;
-    }
-    selected.delete(id);
-  } else {
-    selected.add(id);
-  }
-
-  state.selectedQuizCategories = [...selected];
-  localStorage.setItem("math-clash:quiz-categories", JSON.stringify(state.selectedQuizCategories));
-  renderQuizCategories();
-}
-
-function ensureQuizCategoriesSelected() {
-  const available = state.quizCategoryOptions.map((category) => category.id);
-  state.selectedQuizCategories = state.selectedQuizCategories.filter((id) => available.includes(id));
-  if (!state.selectedQuizCategories.length) {
-    state.selectedQuizCategories = [...available];
-  }
-}
-
-function getSelectedQuizCategories() {
-  if (state.mode !== "quiz") return [];
-  ensureQuizCategoriesSelected();
-  return state.selectedQuizCategories;
-}
-
-function canChangeGameOptions() {
-  return !state.match || ["finished", "refunded"].includes(state.match.status);
-}
-
-function renderDevMode() {
-  elements.devPanel.hidden = !state.devMode;
-  updateDevButtons();
-}
-
-function updateDevButtons() {
-  document.querySelectorAll("[data-dev-player]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.devPlayer === state.devPlayerId);
-  });
-}
-
-function renderXp(events = []) {
-  const xp = state.xp || { total: 0, level: 1 };
-  elements.xpTotal.textContent = `${xp.total || 0} XP`;
-  elements.xpLevel.textContent = `Level ${xp.level || 1}`;
-  elements.xpHistory.innerHTML = "";
-
-  if (!events.length) {
-    const item = document.createElement("li");
-    item.innerHTML = `<span>No XP yet</span><strong>0</strong>`;
-    elements.xpHistory.append(item);
-    return;
-  }
-
-  events.slice(0, 6).forEach((event) => {
-    const item = document.createElement("li");
-    item.innerHTML = `<span>${escapeHtml(formatXpType(event.type))}</span><strong>+${event.amount}</strong>`;
-    elements.xpHistory.append(item);
-  });
-}
-
-function renderQuests() {
-  elements.questsList.innerHTML = "";
-  if (!state.tasks?.length) {
-    elements.questsList.textContent = "No quests yet.";
-    return;
-  }
-
-  state.tasks.forEach((task) => {
-    const card = document.createElement("article");
-    card.className = "quest-card";
-    card.dataset.taskId = task.id;
-    const latestStatus = task.latestClaim ? `Status: ${task.latestClaim.status}` : "Manual review";
-    const isShare = task.type === "share_result";
-    card.innerHTML = `
-      <h3>${escapeHtml(task.title)}</h3>
-      <p>${escapeHtml(task.description)}</p>
-      <div class="quest-meta">+${task.xpReward} XP - ${task.repeatable ? "repeatable" : "one time"} - ${latestStatus}</div>
-      <div class="quest-actions">
-        <input type="url" placeholder="Cast URL / proof URL" data-proof-input>
-        ${isShare ? '<button type="button" data-share-result>Share result</button>' : ""}
-        <button type="button" data-claim-task>Claim</button>
-      </div>
-      <div class="claim-status" data-claim-status></div>
-    `;
-    elements.questsList.append(card);
-  });
-}
-
-async function claimQuest(taskId, proofUrl) {
-  const response = await api(`/api/tasks/${taskId}/claim`, {
-    method: "POST",
-    body: {
-      ...getIdentityPayload(),
-      proofUrl
-    }
-  });
-  applyProfile(response);
-}
-
-async function resetDevState() {
-  if (!state.devMode) return;
-  await api("/api/dev/reset", { method: "POST", body: {} });
-  localStorage.removeItem("math-clash:last-wallet");
-  state.match = null;
-  state.playerId = null;
-  await restoreSession();
-  setStatus("Dev state reset.");
-}
-
-function toggleAnswer(enabled) {
-  elements.answerInput.disabled = !enabled;
-  elements.submitAnswer.disabled = !enabled;
+function formatCompactEth(value) {
+  return formatEth(value).replace(" ETH", "");
 }
 
 function setStatus(message) {
-  elements.matchStatus.textContent = message;
+  elements.statusLine.textContent = message;
 }
 
-function setQuestion(message) {
-  elements.question.textContent = message;
+function showFatalError(error) {
+  console.error(error);
+  setStatus(`App startup error: ${error?.message || error}`);
+  refreshControls();
 }
 
-function getMe() {
-  return state.match?.players.find((player) => player.id === state.playerId) || null;
-}
-
-function getRival() {
-  return state.match?.players.find((player) => player.id !== state.playerId) || null;
-}
-
-function clearMatchLoops() {
-  clearInterval(state.timerId);
-  clearInterval(state.pollId);
-  state.timerId = null;
-  state.pollId = null;
-}
-
-function isUsableEscrow() {
-  return /^0x[a-fA-F0-9]{40}$/.test(CONFIG.escrowAddress) && !/^0x0{40}$/i.test(CONFIG.escrowAddress);
-}
-
-function isSelectedTokenConfigured() {
-  const token = TOKENS[state.selectedToken];
-  if (!token) return false;
-  return token.native || /^0x[a-fA-F0-9]{40}$/.test(token.address || "");
-}
-
-function updateSelectedTokenLabels() {
-  elements.entryFeeLabel.textContent = getEntryFeeLabel(state.selectedToken);
-  elements.tokenLabel.textContent = state.selectedToken;
-}
-
-function getEntryUnits(symbol) {
-  return TOKENS[symbol]?.native ? NATIVE_ENTRY_UNITS : ENTRY_UNITS;
-}
-
-function getTokenDecimals(symbol) {
-  return TOKENS[symbol]?.decimals || 6;
-}
-
-function getEntryFeeLabel(symbol) {
-  if (TOKENS[symbol]?.native) return CONFIG.ethEntryFeeLabel || formatTokenUnits(NATIVE_ENTRY_UNITS, 18);
-  return CONFIG.entryFeeLabel || formatTokenUnits(ENTRY_UNITS, 6);
-}
-
-function getWinnerPayoutLabel(symbol) {
-  const pot = getEntryUnits(symbol) * 2n;
-  const developerFee = (pot * DEVELOPER_FEE_BPS) / BPS_DENOMINATOR;
-  return formatTokenUnits(pot - developerFee, getTokenDecimals(symbol));
-}
-
-function getDeveloperFeeLabel(symbol) {
-  const pot = getEntryUnits(symbol) * 2n;
-  return formatTokenUnits((pot * DEVELOPER_FEE_BPS) / BPS_DENOMINATOR, getTokenDecimals(symbol));
-}
-
-function formatTokenUnits(units, decimals = 6) {
-  const base = 10n ** BigInt(decimals);
-  const whole = units / base;
-  const fraction = (units % base).toString().padStart(decimals, "0").replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole.toString();
-}
-
-function loadStoredQuizCategories() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem("math-clash:quiz-categories") || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+function getWalletError(error, fallback) {
+  const message = String(error?.shortMessage || error?.message || error || "");
+  if (error?.code === 4001 || message.toLowerCase().includes("user rejected")) {
+    return "Wallet request rejected.";
   }
+  return message || fallback;
 }
 
-function toHexQuantity(value) {
-  return `0x${BigInt(value).toString(16)}`;
+function sameAddress(a, b) {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
 }
 
-function getGuestWallet() {
-  const existing = localStorage.getItem("math-clash:guest");
-  if (existing) return existing;
-  const value = `guest:${cryptoRandomId()}`;
-  localStorage.setItem("math-clash:guest", value);
-  return value;
+function isAddress(value) {
+  return /^0x[a-fA-F0-9]{40}$/.test(String(value || ""));
 }
 
-function cryptoRandomId() {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+function normalizeSeatIndex(value) {
+  const seat = Number(value);
+  return Number.isInteger(seat) && seat >= 0 && seat < MAX_SEATS ? seat : -1;
+}
+
+function seatPositionName(index) {
+  return ["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"][index] || "open";
+}
+
+function zeroAddress() {
+  return "0x0000000000000000000000000000000000000000";
 }
 
 function shortAddress(address) {
-  if (!address) return "Connect";
+  if (!address || address === zeroAddress()) return "Open";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function shortTx(txHash) {
-  if (!txHash) return "tx";
-  return `${txHash.slice(0, 10)}...${txHash.slice(-6)}`;
-}
-
-function normalizeHexQuantity(value) {
-  if (typeof value === "number") return `0x${value.toString(16)}`;
-  if (typeof value === "bigint") return `0x${value.toString(16)}`;
-  if (typeof value === "string") return value.toLowerCase();
-  return "";
-}
-
-function formatXpType(type) {
-  return String(type || "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function debounce(fn, ms) {
-  let id = null;
-  return (...args) => {
-    clearTimeout(id);
-    id = setTimeout(() => fn(...args), ms);
-  };
+function shortTx(hash) {
+  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
 }
 
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+    .replace(/>/g, "&gt;");
 }

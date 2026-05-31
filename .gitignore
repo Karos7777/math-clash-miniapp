@@ -9,6 +9,8 @@ cache/
 typechain-types/
 
 data/state.json
+data/*.log
+data/test-*.json
 logs/*.log
 
 npm-debug.log*

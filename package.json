@@ -2,7 +2,7 @@
   "name": "math-clash-farcaster-miniapp",
   "version": "0.1.0",
   "private": true,
-  "description": "Farcaster Mini App for 1v1 brain battles with Base escrow entry payments.",
+  "description": "Farcaster Mini App for a 1v1 on-chain ETH poker table.",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
@@ -13,9 +13,7 @@
     "check:escrow": "node scripts/check-escrow.js",
     "check:miniapp": "node scripts/check-miniapp.js",
     "check:matchmaking": "node scripts/check-matchmaking.js",
-    "check:resolver": "node scripts/check-resolver.js",
-    "set:resolver": "node scripts/set-resolver.js",
-    "settle:match": "node scripts/settle-match.js"
+    "check:resolver": "node scripts/check-resolver.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

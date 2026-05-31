@@ -1,23 +1,22 @@
 const hre = require("hardhat");
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
-const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
-function requireAddress(name) {
-  const value = process.env[name];
+function requireAddress(name, fallback = "") {
+  const value = process.env[name] || fallback;
   if (!hre.ethers.isAddress(value || "")) {
     throw new Error(`${name} must be set to a valid address`);
   }
   return value;
 }
 
-function optionalAddress(name) {
-  const value = process.env[name];
-  if (!value) return null;
-  if (!hre.ethers.isAddress(value)) {
-    throw new Error(`${name} must be a valid address when provided`);
+function parseEthEnv(name, fallback) {
+  const value = process.env[name] || fallback;
+  try {
+    return hre.ethers.parseEther(value);
+  } catch {
+    throw new Error(`${name} must be an ETH amount, for example 0.0001`);
   }
-  return value;
 }
 
 async function main() {
@@ -31,30 +30,32 @@ async function main() {
     throw new Error("No deployer signer. Set DEPLOYER_PRIVATE_KEY in .env");
   }
 
-  const resolver = requireAddress("RESOLVER_ADDRESS");
-  const feeRecipient = requireAddress("FEE_RECIPIENT_ADDRESS");
-  const usdc = optionalAddress("BASE_SEPOLIA_USDC_ADDRESS") || BASE_SEPOLIA_USDC;
-  const usdt = optionalAddress("BASE_SEPOLIA_USDT_ADDRESS");
-  const tokens = [usdc, usdt].filter(Boolean);
+  const feeRecipient = requireAddress("FEE_RECIPIENT_ADDRESS", deployer.address);
+  const handAnte = parseEthEnv("LOW_LIMIT_ANTE_ETH", "0.00001");
+  const minBuyIn = parseEthEnv("LOW_LIMIT_BUY_IN_ETH", "0.0001");
 
   console.log("Network: Base Sepolia");
   console.log("Deployer:", deployer.address);
-  console.log("Resolver:", resolver);
   console.log("Fee recipient:", feeRecipient);
-  console.log("Native ETH entry:", "0.0001 ETH");
-  console.log("Supported tokens:", tokens.join(", "));
+  console.log("Low limit ante:", hre.ethers.formatEther(handAnte), "ETH");
+  console.log("Low limit buy-in:", hre.ethers.formatEther(minBuyIn), "ETH");
+  console.log("Hand fee:", "2%");
+  console.log("Game type: two-player on-chain poker table");
 
   const Escrow = await hre.ethers.getContractFactory("Escrow");
-  const escrow = await Escrow.deploy(resolver, feeRecipient, tokens);
+  const escrow = await Escrow.deploy(feeRecipient, handAnte, minBuyIn);
   await escrow.waitForDeployment();
 
   const address = await escrow.getAddress();
   console.log("");
-  console.log("Escrow deployed:", address);
+  console.log("Poker table deployed:", address);
   console.log("Explorer:", `https://sepolia-explorer.base.org/address/${address}`);
   console.log("");
-  console.log("Copy this into public/config.js:");
-  console.log(`escrowAddress: "${address}",`);
+  console.log("Set this in Render Environment Variables:");
+  console.log(`GAME_CONTRACT_ADDRESS=${address}`);
+  console.log("");
+  console.log("Or for local public/config.js:");
+  console.log(`gameContractAddress: "${address}",`);
 }
 
 main().catch((error) => {
