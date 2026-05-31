@@ -114,6 +114,7 @@ const elements = {
   tableChatInput: $("#tableChatInput"),
   adminBackButton: $("#adminBackButton"),
   adminTokenInput: $("#adminTokenInput"),
+  adminUnlockButton: $("#adminUnlockButton"),
   adminFillBotButton: $("#adminFillBotButton"),
   adminCreateBotButton: $("#adminCreateBotButton"),
   adminRefreshButton: $("#adminRefreshButton"),
@@ -172,6 +173,17 @@ function bindEvents() {
   elements.adminCreateBotButton.addEventListener("click", () => adminAction("/api/admin/bots/create-waiting"));
   elements.adminRefreshButton.addEventListener("click", loadAdminState);
   elements.adminResetLobbyButton.addEventListener("click", () => adminAction("/api/admin/reset-lobby"));
+  elements.adminUnlockButton.addEventListener("click", loadAdminState);
+  elements.adminTokenInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loadAdminState();
+    }
+  });
+  elements.adminTokenInput.addEventListener("input", () => {
+    const token = elements.adminTokenInput.value.trim();
+    if (token) sessionStorage.setItem("pokerAdminToken", token);
+  });
 }
 
 async function initMiniApp() {
@@ -818,8 +830,8 @@ async function loadAdminState() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Admin state unavailable.");
     elements.adminStatus.textContent = data.waitingTableId
-      ? `Waiting table: ${shortTableId(data.waitingTableId)}`
-      : "No waiting table.";
+      ? `Unlocked. Waiting table: ${shortTableId(data.waitingTableId)}. Open it or join from lobby.`
+      : "Unlocked. No waiting table right now.";
     renderAdminTables(data.tables || []);
   } catch (error) {
     elements.adminStatus.textContent = error.message || "Admin state unavailable.";
@@ -843,7 +855,7 @@ async function adminAction(path) {
     if (!response.ok) throw new Error(data.error || "Admin action failed.");
     const table = data.table;
     elements.adminStatus.textContent = table?.id
-      ? `Done. Table ${shortTableId(table.id)} is ready.`
+      ? `Done. Table ${shortTableId(table.id)} is ready. Use Open table to inspect or Join from lobby to sit as player.`
       : "Done.";
     await loadAdminState();
   } catch (error) {
@@ -860,25 +872,54 @@ function adminToken() {
 function renderAdminTables(tables) {
   elements.adminState.innerHTML = "";
   if (!tables.length) {
-    elements.adminState.textContent = "No admin table history yet.";
+    const empty = document.createElement("div");
+    empty.className = "admin-table-row";
+    empty.innerHTML = "<strong>No tables yet.</strong><span>Create a bot table or add a bot to a human waiting in lobby.</span>";
+    elements.adminState.append(empty);
     return;
   }
 
   for (const table of tables) {
     const row = document.createElement("div");
     row.className = "admin-table-row";
-    const link = document.createElement("button");
-    link.className = "ghost-button compact-button";
-    link.type = "button";
-    link.textContent = "Open";
-    link.addEventListener("click", () => {
+    const title = document.createElement("div");
+    title.innerHTML = `<strong>${shortTableId(table.id)}</strong><br><span>${table.simulation ? "Bot test table" : "Human table"}</span>`;
+
+    const meta = document.createElement("div");
+    meta.className = "admin-table-meta";
+    meta.innerHTML = `
+      <div><span>Stage</span><strong>${table.stage || "--"}</strong></div>
+      <div><span>Status</span><strong>${table.status || "--"}</strong></div>
+      <div><span>Player 1</span><strong>${adminPlayerLabel(table.player1, table)}</strong></div>
+      <div><span>Player 2</span><strong>${adminPlayerLabel(table.player2, table)}</strong></div>
+    `;
+
+    const actions = document.createElement("div");
+    actions.className = "admin-table-actions";
+    const open = document.createElement("button");
+    open.className = "admin-open-button";
+    open.type = "button";
+    open.textContent = "Open table";
+    open.addEventListener("click", () => {
       window.location.hash = `#/table/${table.id}`;
     });
-    const text = document.createElement("div");
-    text.innerHTML = `<strong>${shortTableId(table.id)}</strong><br><span>${table.stage || "--"}${table.simulation ? " / bot test" : ""}</span>`;
-    row.append(text, link);
+    const lobby = document.createElement("button");
+    lobby.className = "admin-lobby-button";
+    lobby.type = "button";
+    lobby.textContent = "Join from lobby";
+    lobby.addEventListener("click", () => {
+      window.location.hash = "";
+    });
+    actions.append(open, lobby);
+    row.append(title, meta, actions);
     elements.adminState.append(row);
   }
+}
+
+function adminPlayerLabel(address, table) {
+  if (!isAddress(address)) return "Waiting";
+  const labels = table.playerLabels || {};
+  return labels[address.toLowerCase()] || shortAddress(address);
 }
 
 async function saveMiniApp() {

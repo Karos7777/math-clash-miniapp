@@ -17,7 +17,7 @@
     <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
     <meta name="fc:frame" content='__FRAME_EMBED_JSON__'>
     <link rel="icon" href="/assets/icon.png">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=mvp4">
   </head>
   <body>
     <div class="app-shell">
@@ -178,7 +178,10 @@
                 <p class="eyebrow">Access</p>
                 <label class="field-label">
                   <span>Admin token</span>
-                  <input id="adminTokenInput" type="password" autocomplete="off" placeholder="ADMIN_TOKEN">
+                  <div class="token-row">
+                    <input id="adminTokenInput" type="password" autocomplete="off" placeholder="ADMIN_TOKEN">
+                    <button id="adminUnlockButton" type="button">Unlock</button>
+                  </div>
                 </label>
                 <p class="notice">
                   Admin actions are checked on the server. The token must be set as ADMIN_TOKEN in Cloudflare env.
@@ -188,10 +191,10 @@
               <section class="chat-panel">
                 <p class="eyebrow">Bots</p>
                 <div class="action-row">
-                  <button id="adminFillBotButton" type="button">Add bot to waiting player</button>
-                  <button id="adminCreateBotButton" type="button">Create bot waiting table</button>
-                  <button id="adminRefreshButton" type="button">Refresh admin state</button>
-                  <button id="adminResetLobbyButton" type="button">Clear lobby wait</button>
+                  <button id="adminFillBotButton" type="button">Add bot to human wait</button>
+                  <button id="adminCreateBotButton" type="button">Create bot table</button>
+                  <button id="adminRefreshButton" type="button">Refresh</button>
+                  <button id="adminResetLobbyButton" type="button">Clear wait</button>
                 </div>
               </section>
             </div>
@@ -219,7 +222,7 @@
       </div>
     </div>
 
-    <script src="/config.js?v=mvp3"></script>
-    <script type="module" src="/app.js?v=mvp3"></script>
+    <script src="/config.js?v=mvp4"></script>
+    <script type="module" src="/app.js?v=mvp4"></script>
   </body>
 </html>

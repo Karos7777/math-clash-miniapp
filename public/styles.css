@@ -530,6 +530,21 @@ input:disabled {
   font-weight: 850;
 }
 
+.token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.token-row button {
+  min-height: 44px;
+  border-radius: 8px;
+  background: var(--mint);
+  color: #041e17;
+  padding: 0 14px;
+  font-weight: 900;
+}
+
 .admin-state {
   display: grid;
   gap: 8px;
@@ -537,18 +552,67 @@ input:disabled {
 
 .admin-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 12px;
   background: var(--surface);
 }
 
 .admin-table-row strong,
 .admin-table-row span {
   overflow-wrap: anywhere;
+}
+
+.admin-table-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-table-meta div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: #f8fafc;
+}
+
+.admin-table-meta span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.admin-table-meta strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.admin-table-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 160px));
+  gap: 8px;
+}
+
+.admin-table-actions button {
+  min-height: 38px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+
+.admin-open-button {
+  background: var(--charcoal);
+  color: #ffffff;
+}
+
+.admin-lobby-button {
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
 }
 
 .wallet-sheet {
@@ -652,7 +716,10 @@ input:disabled {
   .lobby-actions,
   .info-panel,
   .status-grid,
-  .chat-form {
+  .chat-form,
+  .token-row,
+  .admin-table-meta,
+  .admin-table-actions {
     grid-template-columns: 1fr;
   }
 

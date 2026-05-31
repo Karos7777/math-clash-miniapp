@@ -636,6 +636,7 @@ function adminTableSummary(table) {
     stage: table.stage,
     player1: table.player1 || "",
     player2: table.player2 || "",
+    playerLabels: table.playerLabels || {},
     simulation: Boolean(table.simulation),
     updatedAt: table.updatedAt
   };
