@@ -11,10 +11,18 @@ const ABI = [
   "function defaultStake() view returns (uint256)",
   "function defaultStreetAnte() view returns (uint256)",
   "function ACTION_TIMEOUT() view returns (uint256)",
+  "function VRF_TIMEOUT() view returns (uint256)",
   "function DEVELOPER_FEE_BPS() view returns (uint256)",
+  "function vrfConfigured() view returns (bool)",
+  "function vrfCoordinator() view returns (address)",
+  "function vrfSubscriptionId() view returns (uint256)",
+  "function vrfKeyHash() view returns (bytes32)",
+  "function vrfCallbackGasLimit() view returns (uint32)",
+  "function vrfRequestConfirmations() view returns (uint16)",
+  "function vrfNativePayment() view returns (bool)",
   "function pendingWithdrawals(address) view returns (uint256)",
   "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
-  "function getHandSeed(bytes32,uint256) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))"
+  "function getHandSeed(bytes32,uint256) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready,uint256 vrfRequestId,uint256 vrfWord,bool vrfReady))"
 ];
 
 const DEFAULT_RPC = "https://sepolia.base.org";
@@ -64,6 +72,8 @@ async function main() {
     "confirm(bytes32)",
     "commitSeed(bytes32,uint256,bytes32)",
     "revealSeed(bytes32,uint256,string)",
+    "requestVrfSeed(bytes32,uint256)",
+    "rawFulfillRandomWords(uint256,uint256[])",
     "timeoutReveal(bytes32,uint256)",
     "payStreetAnte(bytes32)",
     "check(bytes32)",
@@ -78,6 +88,8 @@ async function main() {
     "pendingWithdrawals(address)",
     "defaultStake()",
     "defaultStreetAnte()",
+    "vrfConfigured()",
+    "setVrfConfig(address,uint256,bytes32,uint32,uint16,bool)",
     "pause()",
     "unpause()"
   ];
@@ -89,6 +101,8 @@ async function main() {
     "SeedCommitted(bytes32,uint256,address,bytes32)",
     "SeedRevealed(bytes32,uint256,address,string)",
     "HandSeedReady(bytes32,uint256,bytes32)",
+    "VrfSeedRequested(bytes32,uint256,uint256)",
+    "VrfSeedFulfilled(bytes32,uint256,uint256,uint256)",
     "StageChanged(bytes32,uint8,address,uint256)",
     "ActionSubmitted(bytes32,address,string,uint256)",
     "PlayerTimedOut(bytes32,address,address)",
@@ -122,7 +136,15 @@ async function main() {
   const defaultStake = await table.defaultStake();
   const defaultStreetAnte = await table.defaultStreetAnte();
   const timeout = await table.ACTION_TIMEOUT();
+  const vrfTimeout = await table.VRF_TIMEOUT();
   const feeBps = await table.DEVELOPER_FEE_BPS();
+  const vrfConfigured = await table.vrfConfigured();
+  const vrfCoordinator = await table.vrfCoordinator();
+  const vrfSubscriptionId = await table.vrfSubscriptionId();
+  const vrfKeyHash = await table.vrfKeyHash();
+  const vrfCallbackGasLimit = await table.vrfCallbackGasLimit();
+  const vrfRequestConfirmations = await table.vrfRequestConfirmations();
+  const vrfNativePayment = await table.vrfNativePayment();
   const zeroTableResult = await table.getTable(ethers.ZeroHash);
   const zeroTable = zeroTableResult.exists === undefined && zeroTableResult[0] ? zeroTableResult[0] : zeroTableResult;
 
@@ -134,7 +156,15 @@ async function main() {
   console.log("Default stake:", ethers.formatEther(defaultStake), "ETH");
   console.log("Default street ante:", ethers.formatEther(defaultStreetAnte), "ETH");
   console.log("Timeout seconds:", timeout.toString());
+  console.log("VRF timeout seconds:", vrfTimeout.toString());
   console.log("Developer fee bps:", feeBps.toString());
+  console.log("VRF configured:", vrfConfigured);
+  console.log("VRF coordinator:", vrfCoordinator);
+  console.log("VRF subscription:", vrfSubscriptionId.toString());
+  console.log("VRF key hash:", vrfKeyHash);
+  console.log("VRF callback gas:", String(vrfCallbackGasLimit));
+  console.log("VRF confirmations:", String(vrfRequestConfirmations));
+  console.log("VRF native payment:", vrfNativePayment);
   console.log("Zero table exists:", zeroTable.exists);
   console.log("");
 
@@ -143,6 +173,7 @@ async function main() {
   statusLine("action timeout is 60 seconds", BigInt(timeout) === EXPECTED_TIMEOUT, timeout.toString());
   statusLine("default stake is set", BigInt(defaultStake) > 0n, defaultStake.toString());
   statusLine("default street ante is set", BigInt(defaultStreetAnte) > 0n, defaultStreetAnte.toString());
+  statusLine("Chainlink VRF configured", vrfConfigured, vrfCoordinator);
 
   if (
     selectorResults.some((item) => !item.found) ||
@@ -150,7 +181,8 @@ async function main() {
     BigInt(feeBps) !== EXPECTED_DEVELOPER_FEE_BPS ||
     BigInt(timeout) !== EXPECTED_TIMEOUT ||
     BigInt(defaultStake) <= 0n ||
-    BigInt(defaultStreetAnte) <= 0n
+    BigInt(defaultStreetAnte) <= 0n ||
+    !vrfConfigured
   ) {
     throw new Error("Poker Clash escrow check failed. Confirm this address was deployed from contracts/Escrow.sol");
   }

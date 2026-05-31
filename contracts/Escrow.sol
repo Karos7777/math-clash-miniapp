@@ -1,13 +1,40 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+library VRFV2PlusClientLite {
+    bytes4 internal constant EXTRA_ARGS_V1_TAG = bytes4(keccak256("VRF ExtraArgsV1"));
+
+    struct ExtraArgsV1 {
+        bool nativePayment;
+    }
+
+    struct RandomWordsRequest {
+        bytes32 keyHash;
+        uint256 subId;
+        uint16 requestConfirmations;
+        uint32 callbackGasLimit;
+        uint32 numWords;
+        bytes extraArgs;
+    }
+
+    function argsToBytes(ExtraArgsV1 memory extraArgs) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(EXTRA_ARGS_V1_TAG, extraArgs);
+    }
+}
+
+interface IVRFCoordinatorV2PlusLite {
+    function requestRandomWords(VRFV2PlusClientLite.RandomWordsRequest calldata req) external returns (uint256 requestId);
+}
+
 /// @title Escrow
 /// @notice Testnet MVP escrow for a two-player ETH poker table on Base Sepolia.
-/// @dev Provably Fair v1 improves randomness, but cards are still dealt off-chain in this prototype.
+/// @dev Chainlink VRF supplies the hand seed, but cards are still dealt off-chain in this prototype.
 contract Escrow {
     uint256 public constant ACTION_TIMEOUT = 60 seconds;
+    uint256 public constant VRF_TIMEOUT = 15 minutes;
     uint256 public constant DEVELOPER_FEE_BPS = 200;
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint32 public constant VRF_NUM_WORDS = 1;
 
     enum Stage {
         Waiting,
@@ -21,7 +48,8 @@ contract Escrow {
         Turn,
         River,
         Showdown,
-        Finished
+        Finished,
+        WaitingForVrf
     }
 
     struct Table {
@@ -54,17 +82,28 @@ contract Escrow {
         bool revealed2;
         bytes32 seed;
         bool ready;
+        uint256 vrfRequestId;
+        uint256 vrfWord;
+        bool vrfReady;
     }
 
     address public owner;
     address public feeRecipient;
     uint256 public defaultStake;
     uint256 public defaultStreetAnte;
+    address public vrfCoordinator;
+    uint256 public vrfSubscriptionId;
+    bytes32 public vrfKeyHash;
+    uint32 public vrfCallbackGasLimit;
+    uint16 public vrfRequestConfirmations;
+    bool public vrfNativePayment;
     bool public paused;
     bool private locked;
 
     mapping(bytes32 => Table) private tables;
     mapping(bytes32 => mapping(uint256 => HandSeed)) private handSeeds;
+    mapping(uint256 => bytes32) private vrfRequestTableIds;
+    mapping(uint256 => uint256) private vrfRequestHandIds;
     mapping(bytes32 => mapping(address => address)) public playerResult;
     mapping(address => uint256) public pendingWithdrawals;
 
@@ -89,7 +128,18 @@ contract Escrow {
     event SeedCommitted(bytes32 indexed tableId, uint256 indexed handId, address indexed player, bytes32 commit);
     event SeedRevealed(bytes32 indexed tableId, uint256 indexed handId, address indexed player, string secret);
     event HandSeedReady(bytes32 indexed tableId, uint256 indexed handId, bytes32 seed);
+    event VrfSeedRequested(bytes32 indexed tableId, uint256 indexed handId, uint256 indexed requestId);
+    event VrfSeedFulfilled(bytes32 indexed tableId, uint256 indexed handId, uint256 indexed requestId, uint256 randomWord);
+    event VrfTimedOut(bytes32 indexed tableId, uint256 indexed handId, uint256 indexed requestId);
     event RevealTimedOut(bytes32 indexed tableId, uint256 indexed handId, address indexed inactivePlayer, address winner);
+    event VrfConfigUpdated(
+        address indexed coordinator,
+        uint256 subscriptionId,
+        bytes32 keyHash,
+        uint32 callbackGasLimit,
+        uint16 requestConfirmations,
+        bool nativePayment
+    );
     event FeeRecipientUpdated(address indexed feeRecipient);
     event DefaultStakeUpdated(uint256 defaultStake);
     event DefaultStreetAnteUpdated(uint256 defaultStreetAnte);
@@ -114,7 +164,16 @@ contract Escrow {
         locked = false;
     }
 
-    constructor(address initialFeeRecipient, uint256 initialDefaultStake) {
+    constructor(
+        address initialFeeRecipient,
+        uint256 initialDefaultStake,
+        address initialVrfCoordinator,
+        uint256 initialVrfSubscriptionId,
+        bytes32 initialVrfKeyHash,
+        uint32 initialVrfCallbackGasLimit,
+        uint16 initialVrfRequestConfirmations,
+        bool initialVrfNativePayment
+    ) {
         require(initialFeeRecipient != address(0), "Fee recipient required");
         require(initialDefaultStake > 0, "Stake required");
 
@@ -125,6 +184,14 @@ contract Escrow {
         if (defaultStreetAnte == 0) {
             defaultStreetAnte = 1;
         }
+        _setVrfConfig(
+            initialVrfCoordinator,
+            initialVrfSubscriptionId,
+            initialVrfKeyHash,
+            initialVrfCallbackGasLimit,
+            initialVrfRequestConfirmations,
+            initialVrfNativePayment
+        );
 
         emit OwnershipTransferred(address(0), msg.sender);
         emit FeeRecipientUpdated(initialFeeRecipient);
@@ -242,29 +309,56 @@ contract Escrow {
         emit SeedRevealed(tableId, handId, msg.sender, secret);
 
         if (hand.revealed1 && hand.revealed2) {
-            bytes32 seed = keccak256(
-                abi.encodePacked(
-                    hand.secret1,
-                    hand.secret2,
-                    tableId,
-                    handId,
-                    blockhash(block.number - 1),
-                    block.chainid,
-                    address(this)
-                )
-            );
-            hand.seed = seed;
-            hand.ready = true;
-            table.stage = Stage.SeedReady;
-            table.turn = address(0);
-            table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
-            table.currentBet = 0;
-            table.actionsThisStage = 0;
-            table.streetAntePaid1 = false;
-            table.streetAntePaid2 = false;
-            emit HandSeedReady(tableId, handId, seed);
-            emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+            _requestVrfSeed(tableId, table, hand);
         }
+    }
+
+    function requestVrfSeed(bytes32 tableId, uint256 handId) external whenNotPaused {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.WaitingForVrf, "Not waiting for VRF");
+        require(table.handId == handId, "Wrong hand");
+
+        HandSeed storage hand = handSeeds[tableId][handId];
+        require(hand.revealed1 && hand.revealed2, "Reveals required");
+        require(!hand.ready, "Seed already ready");
+        require(hand.vrfRequestId == 0, "VRF already requested");
+        _requestVrfSeed(tableId, table, hand);
+    }
+
+    function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external {
+        require(msg.sender == vrfCoordinator, "Only VRF coordinator");
+        require(randomWords.length > 0, "No random word");
+
+        bytes32 tableId = vrfRequestTableIds[requestId];
+        uint256 handId = vrfRequestHandIds[requestId];
+        require(tableId != bytes32(0), "Unknown VRF request");
+
+        Table storage table = tables[tableId];
+        HandSeed storage hand = handSeeds[tableId][handId];
+        if (!table.exists || table.handId != handId || table.stage != Stage.WaitingForVrf || hand.ready) {
+            return;
+        }
+
+        uint256 randomWord = randomWords[0];
+        bytes32 seed = keccak256(
+            abi.encodePacked(hand.secret1, hand.secret2, tableId, handId, randomWord, block.chainid, address(this))
+        );
+
+        hand.vrfWord = randomWord;
+        hand.vrfReady = true;
+        hand.seed = seed;
+        hand.ready = true;
+        table.stage = Stage.SeedReady;
+        table.turn = address(0);
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+        table.currentBet = 0;
+        table.actionsThisStage = 0;
+        table.streetAntePaid1 = false;
+        table.streetAntePaid2 = false;
+
+        emit VrfSeedFulfilled(tableId, handId, requestId, randomWord);
+        emit HandSeedReady(tableId, handId, seed);
+        emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
     }
 
     function payStreetAnte(bytes32 tableId) external payable whenNotPaused nonReentrant {
@@ -374,6 +468,13 @@ contract Escrow {
             return;
         }
 
+        if (table.stage == Stage.WaitingForVrf) {
+            HandSeed storage hand = handSeeds[tableId][table.handId];
+            emit VrfTimedOut(tableId, table.handId, hand.vrfRequestId);
+            _refund(tableId, table);
+            return;
+        }
+
         if (table.stage == Stage.SeedReady || (_isActionStage(table.stage) && table.turn == address(0))) {
             _timeoutStreetAnte(tableId, table);
             return;
@@ -462,6 +563,28 @@ contract Escrow {
         emit DefaultStreetAnteUpdated(newDefaultStreetAnte);
     }
 
+    function setVrfConfig(
+        address newCoordinator,
+        uint256 newSubscriptionId,
+        bytes32 newKeyHash,
+        uint32 newCallbackGasLimit,
+        uint16 newRequestConfirmations,
+        bool newNativePayment
+    ) external onlyOwner {
+        _setVrfConfig(
+            newCoordinator,
+            newSubscriptionId,
+            newKeyHash,
+            newCallbackGasLimit,
+            newRequestConfirmations,
+            newNativePayment
+        );
+    }
+
+    function vrfConfigured() public view returns (bool) {
+        return vrfCoordinator != address(0) && vrfSubscriptionId != 0 && vrfKeyHash != bytes32(0) && vrfCallbackGasLimit != 0;
+    }
+
     function pause() external onlyOwner {
         require(!paused, "Already paused");
         paused = true;
@@ -508,6 +631,41 @@ contract Escrow {
         table.actionsThisStage = 0;
         table.streetAntePaid1 = false;
         table.streetAntePaid2 = false;
+        emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+    }
+
+    function _requestVrfSeed(bytes32 tableId, Table storage table, HandSeed storage hand) private {
+        require(vrfConfigured(), "VRF not configured");
+        require(hand.revealed1 && hand.revealed2, "Reveals required");
+        require(!hand.ready, "Seed already ready");
+        require(hand.vrfRequestId == 0, "VRF already requested");
+
+        table.stage = Stage.WaitingForVrf;
+        table.turn = address(0);
+        table.actionDeadline = block.timestamp + VRF_TIMEOUT;
+        table.currentBet = 0;
+        table.actionsThisStage = 0;
+        table.streetAntePaid1 = false;
+        table.streetAntePaid2 = false;
+
+        uint256 requestId = IVRFCoordinatorV2PlusLite(vrfCoordinator).requestRandomWords(
+            VRFV2PlusClientLite.RandomWordsRequest({
+                keyHash: vrfKeyHash,
+                subId: vrfSubscriptionId,
+                requestConfirmations: vrfRequestConfirmations,
+                callbackGasLimit: vrfCallbackGasLimit,
+                numWords: VRF_NUM_WORDS,
+                extraArgs: VRFV2PlusClientLite.argsToBytes(
+                    VRFV2PlusClientLite.ExtraArgsV1({nativePayment: vrfNativePayment})
+                )
+            })
+        );
+
+        hand.vrfRequestId = requestId;
+        vrfRequestTableIds[requestId] = tableId;
+        vrfRequestHandIds[requestId] = table.handId;
+
+        emit VrfSeedRequested(tableId, table.handId, requestId);
         emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
     }
 
@@ -648,6 +806,39 @@ contract Escrow {
 
     function _isActionStage(Stage stage) private pure returns (bool) {
         return stage == Stage.Preflop || stage == Stage.Flop || stage == Stage.Turn || stage == Stage.River;
+    }
+
+    function _setVrfConfig(
+        address newCoordinator,
+        uint256 newSubscriptionId,
+        bytes32 newKeyHash,
+        uint32 newCallbackGasLimit,
+        uint16 newRequestConfirmations,
+        bool newNativePayment
+    ) private {
+        if (newCoordinator == address(0) || newSubscriptionId == 0 || newKeyHash == bytes32(0)) {
+            require(newCoordinator == address(0), "Incomplete VRF config");
+            require(newSubscriptionId == 0, "Incomplete VRF config");
+            require(newKeyHash == bytes32(0), "Incomplete VRF config");
+            require(newCallbackGasLimit == 0, "Incomplete VRF config");
+        } else {
+            require(newCallbackGasLimit > 0, "Callback gas required");
+        }
+
+        vrfCoordinator = newCoordinator;
+        vrfSubscriptionId = newSubscriptionId;
+        vrfKeyHash = newKeyHash;
+        vrfCallbackGasLimit = newCallbackGasLimit;
+        vrfRequestConfirmations = newRequestConfirmations;
+        vrfNativePayment = newNativePayment;
+        emit VrfConfigUpdated(
+            newCoordinator,
+            newSubscriptionId,
+            newKeyHash,
+            newCallbackGasLimit,
+            newRequestConfirmations,
+            newNativePayment
+        );
     }
 
     function _isPlayer(Table storage table, address account) private view returns (bool) {

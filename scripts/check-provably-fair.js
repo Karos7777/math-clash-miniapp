@@ -44,7 +44,7 @@ function main() {
   const handId = 1n;
   const secret1 = "local-secret-player-1";
   const secret2 = "local-secret-player-2";
-  const chainData = `0x${"34".repeat(32)}`;
+  const vrfWord = 123456789n;
   const chainId = 84532n;
   const contract = "0x3333333333333333333333333333333333333333";
 
@@ -54,8 +54,8 @@ function main() {
 
   const seed = keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "bytes32", "uint256", "address"],
-      [secret1, secret2, tableId, handId, chainData, chainId, contract]
+      ["string", "string", "bytes32", "uint256", "uint256", "uint256", "address"],
+      [secret1, secret2, tableId, handId, vrfWord, chainId, contract]
     )
   );
   const deckA = shuffleDeck(seed);
@@ -69,7 +69,7 @@ function main() {
   assert(/^0x[a-fA-F0-9]{64}$/.test(deckHash(deckA)), "deck hash is bytes32");
 
   console.log("");
-  console.log("Provably Fair shuffle check passed.");
+  console.log("Chainlink VRF shuffle check passed.");
 }
 
 try {

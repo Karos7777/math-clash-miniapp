@@ -63,7 +63,7 @@ function createStorage(options = {}) {
 function createEmptyState() {
   return {
     matches: {},
-    pokerLobby: { waitingTableId: "", tableIds: [] },
+    pokerLobby: { waitingTableId: "", tableIds: [], playerTables: {} },
     pokerTables: {},
     stats: {},
     chatMessages: {},
@@ -82,9 +82,13 @@ function normalizeState(raw) {
       state.pokerLobby && typeof state.pokerLobby === "object"
         ? {
             waitingTableId: String(state.pokerLobby.waitingTableId || ""),
-            tableIds: Array.isArray(state.pokerLobby.tableIds) ? state.pokerLobby.tableIds.slice(-100) : []
+            tableIds: Array.isArray(state.pokerLobby.tableIds) ? state.pokerLobby.tableIds.slice(-100) : [],
+            playerTables:
+              state.pokerLobby.playerTables && typeof state.pokerLobby.playerTables === "object"
+                ? state.pokerLobby.playerTables
+                : {}
           }
-        : { waitingTableId: "" },
+        : { waitingTableId: "", tableIds: [], playerTables: {} },
     pokerTables: state.pokerTables && typeof state.pokerTables === "object" ? state.pokerTables : {},
     stats: state.stats && typeof state.stats === "object" ? state.stats : {},
     chatMessages:

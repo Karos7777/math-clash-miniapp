@@ -27,7 +27,7 @@ export async function onRequest(context) {
       gameContractConfigured: Boolean(gameContractAddress(context)),
       chatKvConfigured: Boolean(chatKv(context)),
       adminConfigured: Boolean(context.env.ADMIN_TOKEN),
-      provablyFair: "v1-commit-reveal",
+      provablyFair: "chainlink-vrf-v2.5",
       game: "on-chain-poker-table",
       runtime: "cloudflare-pages"
     });
@@ -43,6 +43,10 @@ export async function onRequest(context) {
 
   if (url.pathname === "/api/lobby/join" && context.request.method === "POST") {
     return joinLobby(context);
+  }
+
+  if (url.pathname === "/api/lobby/status" && context.request.method === "GET") {
+    return getLobbyStatus(context, url);
   }
 
   if (url.pathname.startsWith("/api/tables/")) {
@@ -112,6 +116,7 @@ async function adminCreateBotWaiting(context) {
   markBotTable(table, bot);
   lobby.waitingTableId = table.id;
   trackTable(lobby, table.id);
+  trackPlayerTable(lobby, table.player1, table.id);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ ok: true, bot, table: publicTable(table, "") });
@@ -138,6 +143,8 @@ async function adminFillWaitingWithBot(context) {
   dealTableCards(table);
   lobby.waitingTableId = "";
   trackTable(lobby, table.id);
+  trackPlayerTable(lobby, table.player1, table.id);
+  trackPlayerTable(lobby, table.player2, table.id);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ ok: true, bot, table: publicTable(table, "") });
@@ -170,6 +177,10 @@ async function joinLobby(context) {
 
   const lobby = await readLobby(context);
   let table = null;
+  const existingTable = await findPlayerTable(context, lobby, walletAddress, normalizeTableId(body.tableId));
+  if (existingTable) {
+    return jsonResponse({ table: publicTable(existingTable, walletAddress), restored: true });
+  }
   const waitingId = lobby.waitingTableId;
 
   if (waitingId) {
@@ -191,6 +202,8 @@ async function joinLobby(context) {
         prepareFairHand(table, 1);
       }
       lobby.waitingTableId = "";
+      trackPlayerTable(lobby, table.player1, table.id);
+      trackPlayerTable(lobby, table.player2, table.id);
     }
   }
 
@@ -198,15 +211,31 @@ async function joinLobby(context) {
     table = createPokerTable(walletAddress);
     lobby.waitingTableId = table.id;
     trackTable(lobby, table.id);
+    trackPlayerTable(lobby, walletAddress, table.id);
   }
 
   if (table.bots && Object.keys(table.bots).length) {
     table.simulation = true;
   }
   trackTable(lobby, table.id);
+  trackPlayerTable(lobby, table.player1, table.id);
+  trackPlayerTable(lobby, table.player2, table.id);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ table: publicTable(table, walletAddress) });
+}
+
+async function getLobbyStatus(context, url) {
+  const walletAddress = normalizeAddress(url.searchParams.get("walletAddress"));
+  if (!walletAddress) return jsonResponse({ error: "walletAddress required" }, 400);
+
+  const lobby = await readLobby(context);
+  const table = await findPlayerTable(context, lobby, walletAddress, normalizeTableId(url.searchParams.get("tableId")));
+  return jsonResponse({
+    ok: true,
+    table: table ? publicTable(table, walletAddress) : null,
+    waitingTableId: lobby.waitingTableId || ""
+  });
 }
 
 async function getTableState(context, rawTableId, url) {
@@ -279,7 +308,7 @@ async function handleFairAction(context, rawTableId, action) {
   const walletAddress = normalizeAddress(body.walletAddress);
   const table = await readPokerTable(context, tableId);
   if (!table) return jsonResponse({ error: "Table not found" }, 404);
-  if (table.simulation) return jsonResponse({ error: "Bot tables skip Provably Fair v1." }, 400);
+  if (table.simulation) return jsonResponse({ error: "Bot tables skip Chainlink VRF." }, 400);
   if (!walletAddress || !isTablePlayer(table, walletAddress)) {
     return jsonResponse({ error: "Only table players can update fair state." }, 403);
   }
@@ -309,11 +338,6 @@ async function handleFairAction(context, rawTableId, action) {
   }
 
   table.fair.reveals[walletAddress] = secret;
-  table.fair.chainData = normalizeBytes32(body.chainData) || table.fair.chainData || zeroBytes32();
-
-  if (table.fair.reveals[normalizeAddress(table.player1)] && table.fair.reveals[normalizeAddress(table.player2)]) {
-    finalizeFairDeck(table, context);
-  }
 
   table.updatedAt = new Date().toISOString();
   await writePokerTable(context, table);
@@ -584,11 +608,14 @@ function dealTableCards(table) {
 function prepareFairHand(table, handId) {
   table.handId = handId || Number(table.handId || 0) + 1;
   table.fair = {
-    version: "v1",
+    version: "vrf-v1",
     handId: table.handId,
     commits: {},
     reveals: {},
     chainData: "",
+    vrfRequestId: "",
+    vrfWord: "",
+    vrfReady: false,
     seed: "",
     deckHash: "",
     finalDeck: [],
@@ -612,12 +639,12 @@ function finalizeFairDeck(table, context) {
   const player2 = normalizeAddress(table.player2);
   const secret1 = table.fair.reveals[player1];
   const secret2 = table.fair.reveals[player2];
-  const chainData = normalizeBytes32(table.fair.chainData) || zeroBytes32();
+  const vrfWord = BigInt(table.fair.vrfWord || 0);
   const contract = normalizeAddress(gameContractAddress(context)) || "0x0000000000000000000000000000000000000000";
   const seed = keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "bytes32", "uint256", "address"],
-      [secret1, secret2, table.id, BigInt(table.fair.handId), chainData, BigInt(baseChainId(context)), contract]
+      ["string", "string", "bytes32", "uint256", "uint256", "uint256", "address"],
+      [secret1, secret2, table.id, BigInt(table.fair.handId), vrfWord, BigInt(baseChainId(context)), contract]
     )
   );
   const deck = shuffleDeck(seed);
@@ -659,6 +686,9 @@ function applyChainHandSeed(table, handSeed) {
   if (handSeed.revealed1 && handSeed.secret1) table.fair.reveals[player1] = String(handSeed.secret1);
   if (handSeed.revealed2 && handSeed.secret2) table.fair.reveals[player2] = String(handSeed.secret2);
   const seed = normalizeBytes32(handSeed.seed);
+  if (handSeed.vrfRequestId) table.fair.vrfRequestId = String(handSeed.vrfRequestId);
+  if (handSeed.vrfWord) table.fair.vrfWord = String(handSeed.vrfWord);
+  table.fair.vrfReady = Boolean(handSeed.vrfReady);
   if (handSeed.ready && seed && seed !== zeroBytes32()) {
     finalizeFairDeckFromSeed(table, seed);
   }
@@ -687,7 +717,7 @@ function publicTable(table, viewer) {
     communityCards: visibleCommunity,
     createdAt: table.createdAt,
     updatedAt: table.updatedAt,
-    prototypeNotice: "Provably Fair v1 improves randomness, but card dealing is still partially off-chain and not full mental poker/ZK."
+    prototypeNotice: "Chainlink VRF creates the hand seed, but card dealing is still partially off-chain and not full mental poker/ZK."
   };
 }
 
@@ -695,7 +725,7 @@ function publicFairInfo(table, stage) {
   const fair = table.fair;
   if (!fair) {
     return {
-      version: "v1",
+      version: "vrf-v1",
       handId: Number(table.handId || 0),
       commits: {},
       revealedSecrets: {},
@@ -708,7 +738,7 @@ function publicFairInfo(table, stage) {
 
   const showDeck = ["showdown", "finished"].includes(stage);
   return {
-    version: fair.version || "v1",
+    version: fair.version || "vrf-v1",
     handId: Number(fair.handId || table.handId || 0),
     commits: {
       player1: fair.commits?.[normalizeAddress(table.player1)] || "",
@@ -719,6 +749,9 @@ function publicFairInfo(table, stage) {
       player2: fair.reveals?.[normalizeAddress(table.player2)] || ""
     },
     chainData: fair.chainData || "",
+    vrfRequestId: fair.vrfRequestId || "",
+    vrfWord: fair.vrfWord || "",
+    vrfReady: Boolean(fair.vrfReady),
     seed: fair.seed || "",
     deckHash: fair.deckHash || "",
     deck: showDeck ? fair.finalDeck || [] : [],
@@ -814,9 +847,18 @@ function normalizeLobby(lobby) {
   const tableIds = Array.isArray(value.tableIds)
     ? value.tableIds.map(normalizeTableId).filter(Boolean).slice(-100)
     : [];
+  const playerTables = {};
+  if (value.playerTables && typeof value.playerTables === "object") {
+    for (const [player, tableId] of Object.entries(value.playerTables)) {
+      const walletAddress = normalizeAddress(player);
+      const id = normalizeTableId(tableId);
+      if (walletAddress && id) playerTables[walletAddress] = id;
+    }
+  }
   return {
     waitingTableId: normalizeTableId(value.waitingTableId) || "",
-    tableIds
+    tableIds,
+    playerTables
   };
 }
 
@@ -825,6 +867,39 @@ function trackTable(lobby, tableId) {
   if (!id) return;
   lobby.tableIds = Array.isArray(lobby.tableIds) ? lobby.tableIds : [];
   lobby.tableIds = [...new Set([...lobby.tableIds, id])].slice(-100);
+}
+
+function trackPlayerTable(lobby, walletAddress, tableId) {
+  const player = normalizeAddress(walletAddress);
+  const id = normalizeTableId(tableId);
+  if (!player || !id) return;
+  lobby.playerTables = lobby.playerTables && typeof lobby.playerTables === "object" ? lobby.playerTables : {};
+  lobby.playerTables[player] = id;
+}
+
+async function findPlayerTable(context, lobby, walletAddress, preferredTableId = "") {
+  const player = normalizeAddress(walletAddress);
+  if (!player) return null;
+
+  const candidates = [];
+  if (preferredTableId) candidates.push(preferredTableId);
+  const mapped = normalizeTableId(lobby.playerTables?.[player]);
+  if (mapped) candidates.push(mapped);
+  if (lobby.waitingTableId) candidates.push(lobby.waitingTableId);
+  for (const tableId of [...(lobby.tableIds || [])].reverse()) candidates.push(tableId);
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const id = normalizeTableId(candidate);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const table = await readPokerTable(context, id);
+    if (table && isTablePlayer(table, player) && table.status !== "finished" && normalizeStage(table.stage) !== "finished") {
+      trackPlayerTable(lobby, player, table.id);
+      return table;
+    }
+  }
+  return null;
 }
 
 function adminTableSummary(table) {
@@ -967,7 +1042,8 @@ function normalizeStage(value) {
     "turn",
     "river",
     "showdown",
-    "finished"
+    "finished",
+    "waiting_for_vrf"
   ].includes(stage)
     ? stage
     : "";

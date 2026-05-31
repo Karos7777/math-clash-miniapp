@@ -20,6 +20,7 @@ function main() {
   assert(storage.info().provider.includes("json"), "storage provider available");
   assert(state.matches && state.players && state.xpEvents, "default state has required collections");
   assert(state.pokerLobby && typeof state.pokerLobby === "object", "default state has poker lobby");
+  assert(state.pokerLobby.playerTables && typeof state.pokerLobby.playerTables === "object", "poker lobby tracks player tables");
   assert(state.pokerTables && typeof state.pokerTables === "object", "default state has poker tables");
   assert(state.chatMessages && typeof state.chatMessages === "object", "default state has persistent chat collection");
   assert(state.socialTasks.share_result, "default social tasks are seeded");
@@ -42,6 +43,7 @@ function main() {
     createdAt: now
   };
   state.pokerLobby.waitingTableId = "0x" + "1".repeat(64);
+  state.pokerLobby.playerTables["0x0000000000000000000000000000000000000abc"] = state.pokerLobby.waitingTableId;
   state.pokerTables[state.pokerLobby.waitingTableId] = {
     id: state.pokerLobby.waitingTableId,
     status: "waiting",
@@ -51,10 +53,13 @@ function main() {
     stake: "0.0001",
     handId: 1,
     fair: {
-      version: "v1",
+      version: "vrf-v1",
       handId: 1,
       commits: {},
       reveals: {},
+      vrfRequestId: "1",
+      vrfWord: "123",
+      vrfReady: true,
       seed: "",
       deckHash: ""
     },
@@ -70,7 +75,11 @@ function main() {
     reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].stage === "waiting",
     "poker table state persists after reload"
   );
-  assert(reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].fair.version === "v1", "provably fair state persists");
+  assert(
+    reloaded.pokerLobby.playerTables["0x0000000000000000000000000000000000000abc"] === reloaded.pokerLobby.waitingTableId,
+    "player table index persists after reload"
+  );
+  assert(reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].fair.version === "vrf-v1", "VRF fair state persists");
   assert(reloaded.socialTasks.invite_friend.xpReward === 50, "social task data persists");
 
   fs.rmSync(dir, { recursive: true, force: true });

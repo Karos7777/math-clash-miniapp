@@ -20,6 +20,7 @@ function main() {
 
   const state = normalizeState(storage.loadState());
   state.pokerLobby.waitingTableId = tableId;
+  state.pokerLobby.playerTables["0x1111111111111111111111111111111111111111"] = tableId;
   state.pokerTables[tableId] = {
     id: tableId,
     status: "waiting",
@@ -34,17 +35,26 @@ function main() {
 
   const reloaded = normalizeState(storage.loadState());
   assert(reloaded.pokerLobby.waitingTableId === tableId, "waiting table survives refresh simulation");
+  assert(
+    reloaded.pokerLobby.playerTables["0x1111111111111111111111111111111111111111"] === tableId,
+    "player-to-table index survives refresh simulation"
+  );
 
   const table = reloaded.pokerTables[tableId];
   table.player2 = "0x2222222222222222222222222222222222222222";
   table.status = "confirming";
   table.stage = "confirming";
   reloaded.pokerLobby.waitingTableId = "";
+  reloaded.pokerLobby.playerTables["0x2222222222222222222222222222222222222222"] = tableId;
   storage.saveState(reloaded);
 
   const matched = normalizeState(storage.loadState()).pokerTables[tableId];
   assert(matched.player1 && matched.player2, "second player can fill waiting table");
   assert(matched.stage === "confirming", "matched table restores confirming stage");
+  assert(
+    normalizeState(storage.loadState()).pokerLobby.playerTables["0x2222222222222222222222222222222222222222"] === tableId,
+    "second player can restore matched table"
+  );
   assert(process.env.NODE_ENV === "production" ? !process.env.DEV_PLAYER_ID : true, "production does not require devPlayerId");
 
   fs.rmSync(dir, { recursive: true, force: true });
