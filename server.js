@@ -2,6 +2,7 @@ const http = require("node:http");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { keccak256, solidityPacked, toUtf8Bytes } = require("ethers");
 const { createStorage } = require("./storage");
 
 try {
@@ -54,6 +55,7 @@ const server = http.createServer((req, res) => {
         gameContractConfigured: Boolean(GAME_CONTRACT_ADDRESS),
         chatKvConfigured: false,
         adminConfigured: Boolean(ADMIN_TOKEN),
+        provablyFair: "v1-commit-reveal",
         game: "on-chain-poker-table"
       });
       return;
@@ -89,6 +91,10 @@ const server = http.createServer((req, res) => {
       }
       if (req.method === "POST" && tableId && action === "sync") {
         handleTableSync(req, tableId, res);
+        return;
+      }
+      if (req.method === "POST" && tableId && action === "fair") {
+        handleFairAction(req, tableId, parts[5], res);
         return;
       }
       if (req.method === "POST" && tableId && action === "simulate") {
@@ -280,8 +286,12 @@ function handleLobbyJoin(req, res) {
           table.status = "confirming";
           table.stage = "confirming";
           table.updatedAt = new Date().toISOString();
-          table.deck = table.deck || shuffleDeck(`${table.id}:${table.createdAt}`);
-          dealTableCards(table);
+          if (table.bots && Object.keys(table.bots).length) {
+            table.deck = table.deck || shuffleDeck(`${table.id}:${table.createdAt}`);
+            dealTableCards(table);
+          } else {
+            prepareFairHand(table, 1);
+          }
           state.pokerLobby.waitingTableId = "";
         }
       }
@@ -347,6 +357,14 @@ function handleTableSync(req, rawTableId, res) {
           stage === "finished" ? "finished" : stage === "waiting" ? "waiting" : stage === "confirming" ? "confirming" : "playing";
       }
 
+      const handId = Number(body.handId || 0);
+      if (Number.isSafeInteger(handId) && handId > 0) {
+        table.handId = handId;
+        if (stage === "waiting_for_commit" && !table.fair?.handId) {
+          prepareFairHand(table, handId);
+        }
+      }
+
       const player1 = normalizeAddress(body.player1);
       const player2 = normalizeAddress(body.player2);
       if (player1) table.player1 = player1;
@@ -366,6 +384,88 @@ function handleTableSync(req, rawTableId, res) {
       const badRequest = error instanceof SyntaxError || error.message === "Body too large";
       if (!badRequest) console.error("Table sync failed:", error.message);
       sendJson(res, badRequest ? 400 : 500, { error: badRequest ? "Bad JSON" : "Table sync unavailable" });
+    });
+}
+
+function handleFairAction(req, rawTableId, action, res) {
+  const tableId = normalizeTableId(rawTableId);
+  if (!tableId) {
+    sendJson(res, 400, { error: "Bad table id" });
+    return;
+  }
+  if (action !== "commit" && action !== "reveal") {
+    sendJson(res, 404, { error: "Unknown provably fair action" });
+    return;
+  }
+
+  readJsonBody(req)
+    .then((body) => {
+      const walletAddress = normalizeAddress(body.walletAddress);
+      const state = storage.loadState();
+      const table = state.pokerTables?.[tableId];
+      if (!table) {
+        sendJson(res, 404, { error: "Table not found" });
+        return;
+      }
+      if (table.simulation) {
+        sendJson(res, 400, { error: "Bot tables skip Provably Fair v1." });
+        return;
+      }
+      if (!walletAddress || !isTablePlayer(table, walletAddress)) {
+        sendJson(res, 403, { error: "Only table players can update fair state." });
+        return;
+      }
+
+      const handId = Number(body.handId || table.handId || 1);
+      if (!Number.isSafeInteger(handId) || handId <= 0) {
+        sendJson(res, 400, { error: "Bad hand id" });
+        return;
+      }
+      ensureFairHand(table, handId);
+
+      if (action === "commit") {
+        const commit = normalizeBytes32(body.commit);
+        if (!commit) {
+          sendJson(res, 400, { error: "commit bytes32 required" });
+          return;
+        }
+        table.fair.commits[walletAddress] = commit;
+        table.updatedAt = new Date().toISOString();
+        storage.saveState(state);
+        sendJson(res, 200, { ok: true, table: publicTable(table, walletAddress) });
+        return;
+      }
+
+      const secret = String(body.secret || "").trim();
+      if (!secret) {
+        sendJson(res, 400, { error: "secret required" });
+        return;
+      }
+      const commit = table.fair.commits?.[walletAddress];
+      if (!commit) {
+        sendJson(res, 400, { error: "Commit first" });
+        return;
+      }
+      const expected = seedCommit(secret, walletAddress, table.id, handId);
+      if (expected.toLowerCase() !== commit.toLowerCase()) {
+        sendJson(res, 400, { error: "Secret does not match commit" });
+        return;
+      }
+
+      table.fair.reveals[walletAddress] = secret;
+      table.fair.chainData = normalizeBytes32(body.chainData) || table.fair.chainData || zeroBytes32();
+
+      if (table.fair.reveals[normalizeAddress(table.player1)] && table.fair.reveals[normalizeAddress(table.player2)]) {
+        finalizeFairDeck(table);
+      }
+
+      table.updatedAt = new Date().toISOString();
+      storage.saveState(state);
+      sendJson(res, 200, { ok: true, table: publicTable(table, walletAddress) });
+    })
+    .catch((error) => {
+      const badRequest = error instanceof SyntaxError || error.message === "Body too large";
+      sendJson(res, badRequest ? 400 : 500, { error: badRequest ? "Bad JSON" : "Provably fair update unavailable" });
     });
 }
 
@@ -480,7 +580,9 @@ function createPokerTable(walletAddress) {
     bots: {},
     playerLabels: {},
     winner: "",
-    deck: shuffleDeck(`${id}:${now}`),
+    handId: 0,
+    fair: null,
+    deck: [],
     playerCards: {},
     communityCards: [],
     createdAt: now,
@@ -504,8 +606,61 @@ function dealTableCards(table) {
   table.communityCards = deck.slice(4, 9);
 }
 
+function prepareFairHand(table, handId) {
+  table.handId = handId || Number(table.handId || 0) + 1;
+  table.fair = {
+    version: "v1",
+    handId: table.handId,
+    commits: {},
+    reveals: {},
+    chainData: "",
+    seed: "",
+    deckHash: "",
+    finalDeck: [],
+    createdAt: new Date().toISOString()
+  };
+  table.deck = [];
+  table.playerCards = {};
+  table.communityCards = [];
+}
+
+function ensureFairHand(table, handId) {
+  if (!table.fair || Number(table.fair.handId || 0) !== handId) {
+    prepareFairHand(table, handId);
+  }
+  table.fair.commits = table.fair.commits || {};
+  table.fair.reveals = table.fair.reveals || {};
+}
+
+function finalizeFairDeck(table) {
+  const player1 = normalizeAddress(table.player1);
+  const player2 = normalizeAddress(table.player2);
+  const secret1 = table.fair.reveals[player1];
+  const secret2 = table.fair.reveals[player2];
+  const chainData = normalizeBytes32(table.fair.chainData) || zeroBytes32();
+  const contract = normalizeAddress(GAME_CONTRACT_ADDRESS) || "0x0000000000000000000000000000000000000000";
+  const seed = keccak256(
+    solidityPacked(
+      ["string", "string", "bytes32", "uint256", "bytes32", "uint256", "address"],
+      [secret1, secret2, table.id, BigInt(table.fair.handId), chainData, BigInt(BASE_CHAIN_ID), contract]
+    )
+  );
+  const deck = shuffleDeck(seed);
+  table.fair.seed = seed;
+  table.fair.deckHash = deckHash(deck);
+  table.fair.finalDeck = deck;
+  table.deck = deck;
+  table.playerCards = {
+    [player1]: [deck[0], deck[2]],
+    [player2]: [deck[1], deck[3]]
+  };
+  table.communityCards = deck.slice(4, 9);
+}
+
 function publicTable(table, viewer) {
   const stage = normalizeStage(table.stage) || "waiting";
+  const visibleCommunity = communityForStage(table.communityCards || [], stage);
+  const playerCards = viewer && table.playerCards ? table.playerCards[viewer] || [] : [];
   return {
     id: table.id,
     status: table.status,
@@ -519,11 +674,48 @@ function publicTable(table, viewer) {
     bots: table.bots || {},
     playerLabels: table.playerLabels || {},
     winner: table.winner || "",
-    playerCards: viewer && table.playerCards ? table.playerCards[viewer] || [] : [],
-    communityCards: communityForStage(table.communityCards || [], stage),
+    handId: Number(table.handId || table.fair?.handId || 0),
+    fair: publicFairInfo(table, stage),
+    playerCards,
+    communityCards: visibleCommunity,
     createdAt: table.createdAt,
     updatedAt: table.updatedAt,
-    prototypeNotice: "Card dealing is off-chain in this prototype and not fully trustless yet."
+    prototypeNotice: "Provably Fair v1 improves randomness, but card dealing is still partially off-chain and not full mental poker/ZK."
+  };
+}
+
+function publicFairInfo(table, stage) {
+  const fair = table.fair;
+  if (!fair) {
+    return {
+      version: "v1",
+      handId: Number(table.handId || 0),
+      commits: {},
+      revealedSecrets: {},
+      seed: "",
+      deckHash: "",
+      deck: [],
+      verifyAvailable: false
+    };
+  }
+
+  const showDeck = ["showdown", "finished"].includes(stage);
+  return {
+    version: fair.version || "v1",
+    handId: Number(fair.handId || table.handId || 0),
+    commits: {
+      player1: fair.commits?.[normalizeAddress(table.player1)] || "",
+      player2: fair.commits?.[normalizeAddress(table.player2)] || ""
+    },
+    revealedSecrets: {
+      player1: fair.reveals?.[normalizeAddress(table.player1)] || "",
+      player2: fair.reveals?.[normalizeAddress(table.player2)] || ""
+    },
+    chainData: fair.chainData || "",
+    seed: fair.seed || "",
+    deckHash: fair.deckHash || "",
+    deck: showDeck ? fair.finalDeck || [] : [],
+    verifyAvailable: Boolean(fair.seed && fair.deckHash)
   };
 }
 
@@ -636,6 +828,8 @@ function adminTableSummary(table) {
     player2: table.player2 || "",
     playerLabels: table.playerLabels || {},
     simulation: Boolean(table.simulation),
+    handId: Number(table.handId || table.fair?.handId || 0),
+    fairReady: Boolean(table.fair?.seed),
     updatedAt: table.updatedAt
   };
 }
@@ -683,6 +877,28 @@ function cardRank(card) {
   return { A: 14, K: 13, Q: 12, J: 11, T: 10 }[rank] || Number(rank) || 0;
 }
 
+function seedCommit(secret, playerAddress, tableId, handId) {
+  return keccak256(
+    solidityPacked(
+      ["string", "address", "bytes32", "uint256"],
+      [String(secret), normalizeAddress(playerAddress), normalizeTableId(tableId), BigInt(handId)]
+    )
+  );
+}
+
+function deckHash(deck) {
+  return keccak256(toUtf8Bytes((deck || []).join("|")));
+}
+
+function zeroBytes32() {
+  return `0x${"0".repeat(64)}`;
+}
+
+function normalizeBytes32(value) {
+  const bytes32 = String(value || "").trim();
+  return /^0x[a-fA-F0-9]{64}$/.test(bytes32) ? bytes32.toLowerCase() : "";
+}
+
 function shuffleDeck(seed) {
   const deck = [];
   const suits = ["s", "h", "d", "c"];
@@ -727,7 +943,20 @@ function normalizeAddress(value) {
 
 function normalizeStage(value) {
   const stage = String(value || "").toLowerCase();
-  return ["waiting", "confirming", "preflop", "flop", "turn", "river", "showdown", "finished"].includes(stage)
+  return [
+    "waiting",
+    "confirming",
+    "waiting_for_commit",
+    "waiting_for_reveal",
+    "seed_ready",
+    "dealing",
+    "preflop",
+    "flop",
+    "turn",
+    "river",
+    "showdown",
+    "finished"
+  ].includes(stage)
     ? stage
     : "";
 }

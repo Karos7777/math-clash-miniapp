@@ -9,10 +9,12 @@ const ABI = [
   "function feeRecipient() view returns (address)",
   "function paused() view returns (bool)",
   "function defaultStake() view returns (uint256)",
+  "function defaultStreetAnte() view returns (uint256)",
   "function ACTION_TIMEOUT() view returns (uint256)",
   "function DEVELOPER_FEE_BPS() view returns (uint256)",
   "function pendingWithdrawals(address) view returns (uint256)",
-  "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,address winner,bool refunded))"
+  "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
+  "function getHandSeed(bytes32,uint256) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))"
 ];
 
 const DEFAULT_RPC = "https://sepolia.base.org";
@@ -60,6 +62,10 @@ async function main() {
   const requiredSelectors = [
     "joinTable(bytes32)",
     "confirm(bytes32)",
+    "commitSeed(bytes32,uint256,bytes32)",
+    "revealSeed(bytes32,uint256,string)",
+    "timeoutReveal(bytes32,uint256)",
+    "payStreetAnte(bytes32)",
     "check(bytes32)",
     "bet(bytes32)",
     "call(bytes32)",
@@ -71,6 +77,7 @@ async function main() {
     "getTable(bytes32)",
     "pendingWithdrawals(address)",
     "defaultStake()",
+    "defaultStreetAnte()",
     "pause()",
     "unpause()"
   ];
@@ -89,6 +96,7 @@ async function main() {
   const feeRecipient = await table.feeRecipient();
   const paused = await table.paused();
   const defaultStake = await table.defaultStake();
+  const defaultStreetAnte = await table.defaultStreetAnte();
   const timeout = await table.ACTION_TIMEOUT();
   const feeBps = await table.DEVELOPER_FEE_BPS();
   const zeroTableResult = await table.getTable(ethers.ZeroHash);
@@ -100,6 +108,7 @@ async function main() {
   console.log("Fee recipient:", feeRecipient);
   console.log("Paused:", paused);
   console.log("Default stake:", ethers.formatEther(defaultStake), "ETH");
+  console.log("Default street ante:", ethers.formatEther(defaultStreetAnte), "ETH");
   console.log("Timeout seconds:", timeout.toString());
   console.log("Developer fee bps:", feeBps.toString());
   console.log("Zero table exists:", zeroTable.exists);
@@ -109,12 +118,14 @@ async function main() {
   statusLine("developer fee is 2%", BigInt(feeBps) === EXPECTED_DEVELOPER_FEE_BPS, feeBps.toString());
   statusLine("action timeout is 60 seconds", BigInt(timeout) === EXPECTED_TIMEOUT, timeout.toString());
   statusLine("default stake is set", BigInt(defaultStake) > 0n, defaultStake.toString());
+  statusLine("default street ante is set", BigInt(defaultStreetAnte) > 0n, defaultStreetAnte.toString());
 
   if (
     selectorResults.some((item) => !item.found) ||
     BigInt(feeBps) !== EXPECTED_DEVELOPER_FEE_BPS ||
     BigInt(timeout) !== EXPECTED_TIMEOUT ||
-    BigInt(defaultStake) <= 0n
+    BigInt(defaultStake) <= 0n ||
+    BigInt(defaultStreetAnte) <= 0n
   ) {
     throw new Error("Poker Clash escrow check failed. Confirm this address was deployed from contracts/Escrow.sol");
   }

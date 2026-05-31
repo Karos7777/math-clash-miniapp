@@ -17,7 +17,7 @@
     <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
     <meta name="fc:frame" content='__FRAME_EMBED_JSON__'>
     <link rel="icon" href="/assets/icon.png">
-    <link rel="stylesheet" href="/styles.css?v=mvp4">
+    <link rel="stylesheet" href="/styles.css?v=mvp5">
   </head>
   <body>
     <div class="app-shell">
@@ -134,6 +134,9 @@
 
               <div class="action-row">
                 <button id="confirmButton" type="button">Confirm</button>
+                <button id="commitSeedButton" type="button">Commit seed</button>
+                <button id="revealSeedButton" type="button">Reveal seed</button>
+                <button id="streetAnteButton" type="button">Pay street ante</button>
                 <button id="checkButton" type="button">Check</button>
                 <label id="betField">
                   <span>Bet</span>
@@ -149,6 +152,24 @@
 
               <p class="status-line" id="tableStatus">Waiting for table data.</p>
             </aside>
+          </section>
+
+          <section class="fair-panel" id="fairPanel">
+            <div class="section-title">
+              <p class="eyebrow">Provably fair info</p>
+              <button class="ghost-button compact-button" id="verifyHandButton" type="button">Verify hand</button>
+            </div>
+            <div class="fair-grid">
+              <div><span>Player 1 commit</span><strong id="fairCommit1">--</strong></div>
+              <div><span>Player 2 commit</span><strong id="fairCommit2">--</strong></div>
+              <div><span>Player 1 secret</span><strong id="fairSecret1">--</strong></div>
+              <div><span>Player 2 secret</span><strong id="fairSecret2">--</strong></div>
+              <div><span>Final seed</span><strong id="fairSeed">--</strong></div>
+              <div><span>Deck hash</span><strong id="fairDeckHash">--</strong></div>
+            </div>
+            <p class="status-line" id="fairVerifyStatus">
+              Commit and reveal secrets before cards are dealt. Full deck verification appears after showdown.
+            </p>
           </section>
 
           <section class="chat-panel">
@@ -222,7 +243,7 @@
       </div>
     </div>
 
-    <script src="/config.js?v=mvp4"></script>
-    <script type="module" src="/app.js?v=mvp4"></script>
+    <script src="/config.js?v=mvp5"></script>
+    <script type="module" src="/app.js?v=mvp5"></script>
   </body>
 </html>

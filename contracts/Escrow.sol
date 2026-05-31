@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /// @title Escrow
 /// @notice Testnet MVP escrow for a two-player ETH poker table on Base Sepolia.
-/// @dev Card dealing is intentionally off-chain in this prototype and is not fully trustless yet.
+/// @dev Provably Fair v1 improves randomness, but cards are still dealt off-chain in this prototype.
 contract Escrow {
     uint256 public constant ACTION_TIMEOUT = 60 seconds;
     uint256 public constant DEVELOPER_FEE_BPS = 200;
@@ -12,6 +12,10 @@ contract Escrow {
     enum Stage {
         Waiting,
         Confirming,
+        WaitingForCommit,
+        WaitingForReveal,
+        SeedReady,
+        Dealing,
         Preflop,
         Flop,
         Turn,
@@ -33,17 +37,34 @@ contract Escrow {
         uint8 actionsThisStage;
         bool confirmed1;
         bool confirmed2;
+        uint256 handId;
+        uint256 streetAnte;
+        bool streetAntePaid1;
+        bool streetAntePaid2;
         address winner;
         bool refunded;
+    }
+
+    struct HandSeed {
+        bytes32 commit1;
+        bytes32 commit2;
+        string secret1;
+        string secret2;
+        bool revealed1;
+        bool revealed2;
+        bytes32 seed;
+        bool ready;
     }
 
     address public owner;
     address public feeRecipient;
     uint256 public defaultStake;
+    uint256 public defaultStreetAnte;
     bool public paused;
     bool private locked;
 
     mapping(bytes32 => Table) private tables;
+    mapping(bytes32 => mapping(uint256 => HandSeed)) private handSeeds;
     mapping(bytes32 => mapping(address => address)) public playerResult;
     mapping(address => uint256) public pendingWithdrawals;
 
@@ -51,6 +72,7 @@ contract Escrow {
     event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot);
     event PlayerConfirmed(bytes32 indexed tableId, address indexed player);
     event StageChanged(bytes32 indexed tableId, Stage stage, address turn, uint256 actionDeadline);
+    event StreetAntePaid(bytes32 indexed tableId, uint256 indexed handId, address indexed player, uint256 amount, Stage street);
     event PlayerChecked(bytes32 indexed tableId, address indexed player);
     event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount);
     event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount);
@@ -60,8 +82,13 @@ contract Escrow {
     event TableSettled(bytes32 indexed tableId, address indexed winner, uint256 payout, uint256 developerFee);
     event TableRefunded(bytes32 indexed tableId, uint256 refundPerPlayer);
     event WinningsClaimed(address indexed player, uint256 amount);
+    event SeedCommitted(bytes32 indexed tableId, uint256 indexed handId, address indexed player, bytes32 commit);
+    event SeedRevealed(bytes32 indexed tableId, uint256 indexed handId, address indexed player, string secret);
+    event HandSeedReady(bytes32 indexed tableId, uint256 indexed handId, bytes32 seed);
+    event RevealTimedOut(bytes32 indexed tableId, uint256 indexed handId, address indexed inactivePlayer, address winner);
     event FeeRecipientUpdated(address indexed feeRecipient);
     event DefaultStakeUpdated(uint256 defaultStake);
+    event DefaultStreetAnteUpdated(uint256 defaultStreetAnte);
     event Paused(address indexed account);
     event Unpaused(address indexed account);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -90,10 +117,15 @@ contract Escrow {
         owner = msg.sender;
         feeRecipient = initialFeeRecipient;
         defaultStake = initialDefaultStake;
+        defaultStreetAnte = initialDefaultStake / 10;
+        if (defaultStreetAnte == 0) {
+            defaultStreetAnte = 1;
+        }
 
         emit OwnershipTransferred(address(0), msg.sender);
         emit FeeRecipientUpdated(initialFeeRecipient);
         emit DefaultStakeUpdated(initialDefaultStake);
+        emit DefaultStreetAnteUpdated(defaultStreetAnte);
     }
 
     function joinTable(bytes32 tableId) external payable whenNotPaused nonReentrant {
@@ -105,6 +137,7 @@ contract Escrow {
             table.exists = true;
             table.player1 = msg.sender;
             table.stake = msg.value;
+            table.streetAnte = defaultStreetAnte;
             table.pot = msg.value;
             table.stage = Stage.Waiting;
             emit TableJoined(tableId, msg.sender, msg.value);
@@ -144,7 +177,110 @@ contract Escrow {
         emit PlayerConfirmed(tableId, msg.sender);
 
         if (table.confirmed1 && table.confirmed2) {
-            _startStage(tableId, table, Stage.Preflop, table.player1);
+            table.handId += 1;
+            _startCommit(tableId, table);
+        }
+    }
+
+    function commitSeed(bytes32 tableId, uint256 handId, bytes32 commit) external whenNotPaused {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.WaitingForCommit, "Not commit stage");
+        require(table.handId == handId, "Wrong hand");
+        require(block.timestamp <= table.actionDeadline, "Commit timed out");
+        require(_isPlayer(table, msg.sender), "Not player");
+        require(commit != bytes32(0), "Commit required");
+
+        HandSeed storage hand = handSeeds[tableId][handId];
+        if (msg.sender == table.player1) {
+            require(hand.commit1 == bytes32(0), "Already committed");
+            hand.commit1 = commit;
+        } else {
+            require(hand.commit2 == bytes32(0), "Already committed");
+            hand.commit2 = commit;
+        }
+
+        emit SeedCommitted(tableId, handId, msg.sender, commit);
+
+        if (hand.commit1 != bytes32(0) && hand.commit2 != bytes32(0)) {
+            table.stage = Stage.WaitingForReveal;
+            table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+            emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+        }
+    }
+
+    function revealSeed(bytes32 tableId, uint256 handId, string calldata secret) external whenNotPaused {
+        Table storage table = _table(tableId);
+        require(table.stage == Stage.WaitingForReveal, "Not reveal stage");
+        require(table.handId == handId, "Wrong hand");
+        require(block.timestamp <= table.actionDeadline, "Reveal timed out");
+        require(_isPlayer(table, msg.sender), "Not player");
+        require(bytes(secret).length > 0, "Secret required");
+
+        HandSeed storage hand = handSeeds[tableId][handId];
+        bytes32 expected = keccak256(abi.encodePacked(secret, msg.sender, tableId, handId));
+
+        if (msg.sender == table.player1) {
+            require(!hand.revealed1, "Already revealed");
+            require(hand.commit1 == expected, "Bad reveal");
+            hand.secret1 = secret;
+            hand.revealed1 = true;
+        } else {
+            require(!hand.revealed2, "Already revealed");
+            require(hand.commit2 == expected, "Bad reveal");
+            hand.secret2 = secret;
+            hand.revealed2 = true;
+        }
+
+        emit SeedRevealed(tableId, handId, msg.sender, secret);
+
+        if (hand.revealed1 && hand.revealed2) {
+            bytes32 seed = keccak256(
+                abi.encodePacked(
+                    hand.secret1,
+                    hand.secret2,
+                    tableId,
+                    handId,
+                    blockhash(block.number - 1),
+                    block.chainid,
+                    address(this)
+                )
+            );
+            hand.seed = seed;
+            hand.ready = true;
+            table.stage = Stage.SeedReady;
+            table.turn = address(0);
+            table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+            table.currentBet = 0;
+            table.actionsThisStage = 0;
+            table.streetAntePaid1 = false;
+            table.streetAntePaid2 = false;
+            emit HandSeedReady(tableId, handId, seed);
+            emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+        }
+    }
+
+    function payStreetAnte(bytes32 tableId) external payable whenNotPaused nonReentrant {
+        Table storage table = _table(tableId);
+        require(_isPlayer(table, msg.sender), "Not player");
+        require(table.stage == Stage.SeedReady || _isActionStage(table.stage), "No street ante");
+        require(table.turn == address(0), "Street already active");
+        require(block.timestamp <= table.actionDeadline, "Street ante timed out");
+        require(msg.value == table.streetAnte, "Bad street ante");
+
+        if (msg.sender == table.player1) {
+            require(!table.streetAntePaid1, "Already paid");
+            table.streetAntePaid1 = true;
+        } else {
+            require(!table.streetAntePaid2, "Already paid");
+            table.streetAntePaid2 = true;
+        }
+
+        table.pot += msg.value;
+        emit StreetAntePaid(tableId, table.handId, msg.sender, msg.value, table.stage);
+
+        if (table.streetAntePaid1 && table.streetAntePaid2) {
+            Stage nextStage = table.stage == Stage.SeedReady ? Stage.Preflop : table.stage;
+            _startActionStage(tableId, table, nextStage, table.player1);
         }
     }
 
@@ -220,6 +356,16 @@ contract Escrow {
             return;
         }
 
+        if (table.stage == Stage.WaitingForCommit || table.stage == Stage.WaitingForReveal) {
+            _timeoutSeed(tableId, table);
+            return;
+        }
+
+        if (table.stage == Stage.SeedReady || (_isActionStage(table.stage) && table.turn == address(0))) {
+            _timeoutStreetAnte(tableId, table);
+            return;
+        }
+
         if (table.stage == Stage.Showdown) {
             address result1 = playerResult[tableId][table.player1];
             address result2 = playerResult[tableId][table.player2];
@@ -241,6 +387,14 @@ contract Escrow {
         address winner = _opponent(table, inactive);
         emit PlayerTimedOut(tableId, inactive, winner);
         _settle(tableId, table, winner);
+    }
+
+    function timeoutReveal(bytes32 tableId, uint256 handId) external whenNotPaused nonReentrant {
+        Table storage table = _table(tableId);
+        require(table.handId == handId, "Wrong hand");
+        require(table.stage == Stage.WaitingForCommit || table.stage == Stage.WaitingForReveal, "No reveal timeout");
+        require(table.actionDeadline > 0 && block.timestamp > table.actionDeadline, "Timeout not reached");
+        _timeoutSeed(tableId, table);
     }
 
     function submitResult(bytes32 tableId, address winner) external whenNotPaused nonReentrant {
@@ -289,6 +443,12 @@ contract Escrow {
         emit DefaultStakeUpdated(newDefaultStake);
     }
 
+    function setDefaultStreetAnte(uint256 newDefaultStreetAnte) external onlyOwner {
+        require(newDefaultStreetAnte > 0, "Street ante required");
+        defaultStreetAnte = newDefaultStreetAnte;
+        emit DefaultStreetAnteUpdated(newDefaultStreetAnte);
+    }
+
     function pause() external onlyOwner {
         require(!paused, "Already paused");
         paused = true;
@@ -311,6 +471,10 @@ contract Escrow {
         table = tables[tableId];
     }
 
+    function getHandSeed(bytes32 tableId, uint256 handId) external view returns (HandSeed memory hand) {
+        hand = handSeeds[tableId][handId];
+    }
+
     function _activeTurnTable(bytes32 tableId) private view returns (Table storage table) {
         table = _table(tableId);
         require(_isActionStage(table.stage), "Not action stage");
@@ -323,13 +487,35 @@ contract Escrow {
         require(table.exists, "Table not found");
     }
 
-    function _startStage(bytes32 tableId, Table storage table, Stage stage, address turn) private {
+    function _startCommit(bytes32 tableId, Table storage table) private {
+        table.stage = Stage.WaitingForCommit;
+        table.turn = address(0);
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+        table.currentBet = 0;
+        table.actionsThisStage = 0;
+        table.streetAntePaid1 = false;
+        table.streetAntePaid2 = false;
+        emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
+    }
+
+    function _startActionStage(bytes32 tableId, Table storage table, Stage stage, address turn) private {
         table.stage = stage;
         table.turn = turn;
         table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
         table.actionsThisStage = 0;
         table.currentBet = 0;
         emit StageChanged(tableId, stage, turn, table.actionDeadline);
+    }
+
+    function _startStreetAnteStage(bytes32 tableId, Table storage table, Stage stage) private {
+        table.stage = stage;
+        table.turn = address(0);
+        table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
+        table.actionsThisStage = 0;
+        table.currentBet = 0;
+        table.streetAntePaid1 = false;
+        table.streetAntePaid2 = false;
+        emit StageChanged(tableId, stage, address(0), table.actionDeadline);
     }
 
     function _passTurn(bytes32 tableId, Table storage table) private {
@@ -340,21 +526,69 @@ contract Escrow {
 
     function _advanceStage(bytes32 tableId, Table storage table) private {
         if (table.stage == Stage.Preflop) {
-            _startStage(tableId, table, Stage.Flop, table.player1);
+            _startStreetAnteStage(tableId, table, Stage.Flop);
         } else if (table.stage == Stage.Flop) {
-            _startStage(tableId, table, Stage.Turn, table.player1);
+            _startStreetAnteStage(tableId, table, Stage.Turn);
         } else if (table.stage == Stage.Turn) {
-            _startStage(tableId, table, Stage.River, table.player1);
+            _startStreetAnteStage(tableId, table, Stage.River);
         } else if (table.stage == Stage.River) {
             table.stage = Stage.Showdown;
             table.turn = address(0);
             table.actionDeadline = block.timestamp + ACTION_TIMEOUT;
             table.actionsThisStage = 0;
             table.currentBet = 0;
+            table.streetAntePaid1 = false;
+            table.streetAntePaid2 = false;
             emit StageChanged(tableId, table.stage, address(0), table.actionDeadline);
         } else {
             revert("Cannot advance");
         }
+    }
+
+    function _timeoutSeed(bytes32 tableId, Table storage table) private {
+        HandSeed storage hand = handSeeds[tableId][table.handId];
+        address winner = address(0);
+        address inactive = address(0);
+
+        if (table.stage == Stage.WaitingForCommit) {
+            if (hand.commit1 != bytes32(0) && hand.commit2 == bytes32(0)) {
+                winner = table.player1;
+                inactive = table.player2;
+            } else if (hand.commit2 != bytes32(0) && hand.commit1 == bytes32(0)) {
+                winner = table.player2;
+                inactive = table.player1;
+            }
+        } else {
+            if (hand.revealed1 && !hand.revealed2) {
+                winner = table.player1;
+                inactive = table.player2;
+            } else if (hand.revealed2 && !hand.revealed1) {
+                winner = table.player2;
+                inactive = table.player1;
+            }
+        }
+
+        emit RevealTimedOut(tableId, table.handId, inactive, winner);
+        if (winner == address(0)) {
+            _refund(tableId, table);
+        } else {
+            emit PlayerTimedOut(tableId, inactive, winner);
+            _settle(tableId, table, winner);
+        }
+    }
+
+    function _timeoutStreetAnte(bytes32 tableId, Table storage table) private {
+        if (table.streetAntePaid1 && !table.streetAntePaid2) {
+            emit PlayerTimedOut(tableId, table.player2, table.player1);
+            _settle(tableId, table, table.player1);
+            return;
+        }
+        if (table.streetAntePaid2 && !table.streetAntePaid1) {
+            emit PlayerTimedOut(tableId, table.player1, table.player2);
+            _settle(tableId, table, table.player2);
+            return;
+        }
+        _refund(tableId, table);
     }
 
     function _settle(bytes32 tableId, Table storage table, address winner) private {

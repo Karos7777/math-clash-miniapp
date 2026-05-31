@@ -49,6 +49,15 @@ function main() {
     player1: "0x0000000000000000000000000000000000000abc",
     player2: "",
     stake: "0.0001",
+    handId: 1,
+    fair: {
+      version: "v1",
+      handId: 1,
+      commits: {},
+      reveals: {},
+      seed: "",
+      deckHash: ""
+    },
     createdAt: now,
     updatedAt: now
   };
@@ -61,6 +70,7 @@ function main() {
     reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].stage === "waiting",
     "poker table state persists after reload"
   );
+  assert(reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].fair.version === "v1", "provably fair state persists");
   assert(reloaded.socialTasks.invite_friend.xpReward === 50, "social task data persists");
 
   fs.rmSync(dir, { recursive: true, force: true });

@@ -18,11 +18,28 @@ const CONFIG = {
 
 const CONTRACT_ADDRESS = CONFIG.gameContractAddress || CONFIG.escrowAddress || "";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const STAGES = ["waiting", "confirming", "preflop", "flop", "turn", "river", "showdown", "finished"];
+const STAGES = [
+  "waiting",
+  "confirming",
+  "waiting_for_commit",
+  "waiting_for_reveal",
+  "seed_ready",
+  "dealing",
+  "preflop",
+  "flop",
+  "turn",
+  "river",
+  "showdown",
+  "finished"
+];
 const ACTIVE_STAGES = new Set(["preflop", "flop", "turn", "river"]);
 const CONTRACT_ABI = [
   "function joinTable(bytes32 tableId) payable",
   "function confirm(bytes32 tableId)",
+  "function commitSeed(bytes32 tableId,uint256 handId,bytes32 commit)",
+  "function revealSeed(bytes32 tableId,uint256 handId,string secret)",
+  "function timeoutReveal(bytes32 tableId,uint256 handId)",
+  "function payStreetAnte(bytes32 tableId) payable",
   "function check(bytes32 tableId)",
   "function bet(bytes32 tableId) payable",
   "function call(bytes32 tableId) payable",
@@ -30,13 +47,20 @@ const CONTRACT_ABI = [
   "function timeout(bytes32 tableId)",
   "function submitResult(bytes32 tableId,address winner)",
   "function claimWinnings()",
-  "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,address winner,bool refunded))",
+  "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
+  "function getHandSeed(bytes32 tableId,uint256 handId) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))",
   "function pendingWithdrawals(address) view returns (uint256)",
   "function defaultStake() view returns (uint256)",
+  "function defaultStreetAnte() view returns (uint256)",
   "event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake)",
   "event TableReady(bytes32 indexed tableId, address indexed player1, address indexed player2, uint256 pot)",
   "event PlayerConfirmed(bytes32 indexed tableId, address indexed player)",
   "event StageChanged(bytes32 indexed tableId, uint8 stage, address turn, uint256 actionDeadline)",
+  "event StreetAntePaid(bytes32 indexed tableId, uint256 indexed handId, address indexed player, uint256 amount, uint8 street)",
+  "event SeedCommitted(bytes32 indexed tableId, uint256 indexed handId, address indexed player, bytes32 commit)",
+  "event SeedRevealed(bytes32 indexed tableId, uint256 indexed handId, address indexed player, string secret)",
+  "event HandSeedReady(bytes32 indexed tableId, uint256 indexed handId, bytes32 seed)",
+  "event RevealTimedOut(bytes32 indexed tableId, uint256 indexed handId, address indexed inactivePlayer, address winner)",
   "event PlayerChecked(bytes32 indexed tableId, address indexed player)",
   "event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount)",
   "event PlayerCalled(bytes32 indexed tableId, address indexed player, uint256 amount)",
@@ -99,6 +123,9 @@ const elements = {
   communityCards: $("#communityCards"),
   playerCards: $("#playerCards"),
   confirmButton: $("#confirmButton"),
+  commitSeedButton: $("#commitSeedButton"),
+  revealSeedButton: $("#revealSeedButton"),
+  streetAnteButton: $("#streetAnteButton"),
   checkButton: $("#checkButton"),
   betField: $("#betField"),
   betInput: $("#betInput"),
@@ -124,7 +151,16 @@ const elements = {
   walletSheet: $("#walletSheet"),
   walletOptions: $("#walletOptions"),
   walletCancelButton: $("#walletCancelButton"),
-  walletPickerStatus: $("#walletPickerStatus")
+  walletPickerStatus: $("#walletPickerStatus"),
+  fairPanel: $("#fairPanel"),
+  fairCommit1: $("#fairCommit1"),
+  fairCommit2: $("#fairCommit2"),
+  fairSecret1: $("#fairSecret1"),
+  fairSecret2: $("#fairSecret2"),
+  fairSeed: $("#fairSeed"),
+  fairDeckHash: $("#fairDeckHash"),
+  verifyHandButton: $("#verifyHandButton"),
+  fairVerifyStatus: $("#fairVerifyStatus")
 };
 
 boot().catch((error) => showError(error.message || "App failed to start."));
@@ -160,11 +196,15 @@ function bindEvents() {
   elements.saveMiniApp.addEventListener("click", saveMiniApp);
   elements.shareMiniApp.addEventListener("click", shareMiniApp);
   elements.confirmButton.addEventListener("click", confirmOrJoin);
+  elements.commitSeedButton.addEventListener("click", commitSeed);
+  elements.revealSeedButton.addEventListener("click", revealSeed);
+  elements.streetAnteButton.addEventListener("click", payStreetAnte);
   elements.checkButton.addEventListener("click", checkAction);
   elements.betButton.addEventListener("click", bet);
   elements.callButton.addEventListener("click", callBet);
   elements.foldButton.addEventListener("click", foldAction);
-  elements.timeoutButton.addEventListener("click", () => sendTableTx("timeout", () => state.writeContract.timeout(tableIdBytes())));
+  elements.timeoutButton.addEventListener("click", timeoutAction);
+  elements.verifyHandButton.addEventListener("click", verifyFairHand);
   elements.settleButton.addEventListener("click", settleShowdown);
   elements.claimButton.addEventListener("click", () => sendTableTx("claim", () => state.writeContract.claimWinnings()));
   elements.lobbyChatForm.addEventListener("submit", sendLobbyChat);
@@ -426,6 +466,10 @@ async function refreshChainTable() {
       currentBet: table.currentBet,
       confirmed1: Boolean(table.confirmed1),
       confirmed2: Boolean(table.confirmed2),
+      handId: Number(table.handId || 0),
+      streetAnte: table.streetAnte || 0n,
+      streetAntePaid1: Boolean(table.streetAntePaid1),
+      streetAntePaid2: Boolean(table.streetAntePaid2),
       winner: table.winner,
       refunded: Boolean(table.refunded)
     };
@@ -444,6 +488,7 @@ async function syncOffchainWithChain() {
       body: JSON.stringify({
         viewer: state.account,
         stage: state.chainTable.stage,
+        handId: state.chainTable.handId,
         player1: state.chainTable.player1,
         player2: state.chainTable.player2,
         winner: isAddress(state.chainTable.winner) && state.chainTable.winner !== ZERO_ADDRESS
@@ -476,8 +521,32 @@ function renderTable() {
   elements.tableStatus.textContent = tableStatusText(stage, chain, offchain);
   renderCards(elements.playerCards, offchain.playerCards || [], true);
   renderCards(elements.communityCards, offchain.communityCards || [], false);
+  renderFairInfo(offchain.fair || {}, stage);
   renderControls();
   renderTimer();
+}
+
+function renderFairInfo(fair, stage) {
+  const info = fair || {};
+  elements.fairCommit1.textContent = shortHash(info.commits?.player1);
+  elements.fairCommit2.textContent = shortHash(info.commits?.player2);
+  elements.fairSecret1.textContent = info.revealedSecrets?.player1 ? shortSecret(info.revealedSecrets.player1) : "--";
+  elements.fairSecret2.textContent = info.revealedSecrets?.player2 ? shortSecret(info.revealedSecrets.player2) : "--";
+  elements.fairSeed.textContent = shortHash(info.seed);
+  elements.fairDeckHash.textContent = shortHash(info.deckHash);
+  elements.verifyHandButton.disabled = state.busy || !info.verifyAvailable;
+
+  if (stage === "waiting_for_commit") {
+    elements.fairVerifyStatus.textContent = "Commit your local secret. Opponent cannot see it yet.";
+  } else if (stage === "waiting_for_reveal") {
+    elements.fairVerifyStatus.textContent = "Reveal your local secret within 60 seconds.";
+  } else if (info.verifyAvailable && !info.deck?.length) {
+    elements.fairVerifyStatus.textContent = "Seed and deck hash are ready. Full deck is revealed after showdown.";
+  } else if (info.deck?.length) {
+    elements.fairVerifyStatus.textContent = "Full deck is public. Press Verify hand to recompute it.";
+  } else {
+    elements.fairVerifyStatus.textContent = "Commit-reveal protects the random seed before cards are dealt.";
+  }
 }
 
 function renderControls() {
@@ -495,15 +564,21 @@ function renderControls() {
   const offchainReady = Boolean(state.offchainTable?.player1 && state.offchainTable?.player2);
   const needsJoin = state.tableId && offchainReady && (!chain?.exists || !joined);
   const needsConfirm = joined && stage === "confirming" && !myConfirmed(chain);
+  const waitingForCommit = joined && stage === "waiting_for_commit";
+  const waitingForReveal = joined && stage === "waiting_for_reveal";
+  const needsStreetAnte = joined && (stage === "seed_ready" || ACTIVE_STAGES.has(stage)) && chain?.turn === ZERO_ADDRESS && !myStreetAntePaid(chain);
   const myTurn = joined && sameAddress(chain?.turn, state.account);
   const timedOut = Boolean(chain?.actionDeadline && Date.now() / 1000 > chain.actionDeadline);
-  const canAct = ACTIVE_STAGES.has(stage) && myTurn && !timedOut;
+  const canAct = ACTIVE_STAGES.has(stage) && myTurn && !timedOut && !needsStreetAnte;
   const canCall = canAct && BigInt(chain?.currentBet || 0) > 0n;
   const canSettle = stage === "showdown" && joined && Boolean(state.offchainTable?.winner);
   const canClaim = state.pendingClaim > 0n;
 
   elements.startGameButton.disabled = state.busy || !connected;
   elements.confirmButton.hidden = !(needsJoin || needsConfirm);
+  elements.commitSeedButton.hidden = !waitingForCommit;
+  elements.revealSeedButton.hidden = !waitingForReveal;
+  elements.streetAnteButton.hidden = !needsStreetAnte;
   elements.checkButton.hidden = !(canAct && !canCall);
   elements.betField.hidden = !canAct;
   elements.betButton.hidden = !(canAct && !canCall);
@@ -514,7 +589,11 @@ function renderControls() {
   elements.claimButton.hidden = !canClaim;
 
   elements.confirmButton.textContent = needsJoin ? "Confirm Stake" : "Confirm";
+  elements.streetAnteButton.textContent = `Pay street ante ${formatEth(chain?.streetAnte || 0n)}`;
   elements.confirmButton.disabled = state.busy || !connected || !contractConfigured;
+  elements.commitSeedButton.disabled = state.busy || !connected || !contractConfigured || hasMyCommit();
+  elements.revealSeedButton.disabled = state.busy || !connected || !contractConfigured || !hasMyCommit() || hasMyReveal();
+  elements.streetAnteButton.disabled = state.busy || !connected || !contractConfigured || !chain?.streetAnte;
   elements.checkButton.disabled = state.busy || !contractConfigured;
   elements.betButton.disabled = state.busy || !contractConfigured;
   elements.callButton.disabled = state.busy || !contractConfigured;
@@ -539,6 +618,9 @@ function renderSimulationControls(connected) {
 
   elements.startGameButton.disabled = state.busy || !connected;
   elements.confirmButton.hidden = !needsConfirm;
+  elements.commitSeedButton.hidden = true;
+  elements.revealSeedButton.hidden = true;
+  elements.streetAnteButton.hidden = true;
   elements.checkButton.hidden = !canAct;
   elements.betField.hidden = !canAct;
   elements.betButton.hidden = !canAct;
@@ -567,6 +649,67 @@ async function confirmOrJoin() {
     return;
   }
   await sendTableTx("confirm", () => state.writeContract.confirm(tableIdBytes()));
+}
+
+async function commitSeed() {
+  try {
+    await ensureWalletAndNetwork();
+    const handId = currentHandId();
+    if (!handId) throw new Error("Hand id is not ready yet.");
+    const secret = getOrCreateHandSecret(handId);
+    const commit = await buildSeedCommit(secret, state.account, tableIdBytes(), handId);
+    setBusy(true, "commit seed: tx pending...");
+    const tx = await state.writeContract.commitSeed(tableIdBytes(), BigInt(handId), commit);
+    elements.tableStatus.textContent = `Transaction pending: ${shortTx(tx.hash)}`;
+    await tx.wait();
+    await postFairAction("commit", { handId, commit });
+    elements.tableStatus.textContent = "Seed committed. Waiting for opponent.";
+    await refreshTable();
+  } catch (error) {
+    showError(walletError(error, "Commit seed failed."));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function revealSeed() {
+  try {
+    await ensureWalletAndNetwork();
+    const handId = currentHandId();
+    if (!handId) throw new Error("Hand id is not ready yet.");
+    const secret = readHandSecret(handId);
+    if (!secret) throw new Error("Local secret missing. This browser cannot reveal the seed it committed.");
+    setBusy(true, "reveal seed: tx pending...");
+    const tx = await state.writeContract.revealSeed(tableIdBytes(), BigInt(handId), secret);
+    elements.tableStatus.textContent = `Transaction pending: ${shortTx(tx.hash)}`;
+    const receipt = await tx.wait();
+    const chainData = await previousBlockHash(receipt);
+    await postFairAction("reveal", { handId, secret, chainData });
+    elements.tableStatus.textContent = "Seed revealed. Cards will be dealt after both reveals.";
+    await refreshTable();
+  } catch (error) {
+    showError(walletError(error, "Reveal seed failed."));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function payStreetAnte() {
+  const value = BigInt(state.chainTable?.streetAnte || 0);
+  if (value <= 0n) {
+    showError("Street ante is not ready.");
+    return;
+  }
+  await sendTableTx("street ante", () => state.writeContract.payStreetAnte(tableIdBytes(), { value }));
+}
+
+async function timeoutAction() {
+  const handId = currentHandId();
+  if (["waiting_for_commit", "waiting_for_reveal"].includes(state.chainTable?.stage) && handId) {
+    await sendTableTx("reveal timeout", () => state.writeContract.timeoutReveal(tableIdBytes(), BigInt(handId)));
+    return;
+  }
+  await sendTableTx("timeout", () => state.writeContract.timeout(tableIdBytes()));
 }
 
 async function checkAction() {
@@ -805,7 +948,18 @@ async function sendTableChat(event) {
 function attachEvents() {
   if (!state.readContract || state.eventsAttached) return;
   state.eventsAttached = true;
-  ["TableJoined", "TableReady", "PlayerConfirmed", "StageChanged", "TableSettled"].forEach((eventName) => {
+  [
+    "TableJoined",
+    "TableReady",
+    "PlayerConfirmed",
+    "StageChanged",
+    "StreetAntePaid",
+    "SeedCommitted",
+    "SeedRevealed",
+    "HandSeedReady",
+    "RevealTimedOut",
+    "TableSettled"
+  ].forEach((eventName) => {
     state.readContract.on(eventName, (...args) => {
       const tableId = String(args[0]).toLowerCase();
       if (state.tableId && tableId === state.tableId.toLowerCase()) {
@@ -943,11 +1097,80 @@ async function shareMiniApp() {
   }
 }
 
+async function verifyFairHand() {
+  try {
+    const fair = state.offchainTable?.fair || {};
+    const player1 = state.offchainTable?.player1 || state.chainTable?.player1;
+    const player2 = state.offchainTable?.player2 || state.chainTable?.player2;
+    const handId = Number(fair.handId || currentHandId());
+    const secret1 = fair.revealedSecrets?.player1 || "";
+    const secret2 = fair.revealedSecrets?.player2 || "";
+    if (!secret1 || !secret2 || !handId) {
+      elements.fairVerifyStatus.textContent = "Both secrets are needed before verification.";
+      return;
+    }
+
+    const commit1 = await buildSeedCommit(secret1, player1, state.tableId, handId);
+    const commit2 = await buildSeedCommit(secret2, player2, state.tableId, handId);
+    const commitsOk =
+      commit1.toLowerCase() === String(fair.commits?.player1 || "").toLowerCase() &&
+      commit2.toLowerCase() === String(fair.commits?.player2 || "").toLowerCase();
+
+    const deck = deterministicDeck(fair.seed || "");
+    const hash = await buildDeckHash(deck);
+    const deckOk = hash.toLowerCase() === String(fair.deckHash || "").toLowerCase();
+    const publishedDeckOk = !fair.deck?.length || fair.deck.join("|") === deck.join("|");
+
+    elements.fairVerifyStatus.textContent =
+      commitsOk && deckOk && publishedDeckOk
+        ? "Verified: commits, seed deck hash, and published deck match."
+        : "Verification failed. Check commits, secrets, seed, or deck hash.";
+  } catch (error) {
+    elements.fairVerifyStatus.textContent = error.message || "Verification failed.";
+  }
+}
+
 async function getEthers() {
   if (!state.ethers) {
     state.ethers = await import("https://esm.sh/ethers@6.13.5");
   }
   return state.ethers;
+}
+
+async function buildSeedCommit(secret, playerAddress, tableId, handId) {
+  const { keccak256, solidityPacked } = await getEthers();
+  return keccak256(
+    solidityPacked(
+      ["string", "address", "bytes32", "uint256"],
+      [secret, playerAddress, tableId, BigInt(handId)]
+    )
+  );
+}
+
+async function postFairAction(action, payload) {
+  const response = await fetch(`/api/tables/${encodeURIComponent(state.tableId)}/fair/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ walletAddress: state.account, ...payload })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Provably fair state update failed.");
+  state.offchainTable = data.table || state.offchainTable;
+}
+
+async function previousBlockHash(receipt) {
+  try {
+    const { BrowserProvider } = await getEthers();
+    const provider = new BrowserProvider(state.provider);
+    const blockNumber = Number(receipt?.blockNumber || 0);
+    if (blockNumber > 0) {
+      const block = await provider.getBlock(blockNumber - 1);
+      if (block?.hash) return block.hash;
+    }
+  } catch {
+    // Chain data is an extra seed input; fallback keeps local testing usable.
+  }
+  return `0x${"0".repeat(64)}`;
 }
 
 function parseEth(value) {
@@ -978,6 +1201,12 @@ function tableStatusText(stage, chain, offchain) {
   if (!chain?.exists) return "Both players are matched. Confirm your stake transaction.";
   if (stage === "waiting") return "Waiting for second player.";
   if (stage === "confirming") return "Both players must confirm within 60 seconds.";
+  if (stage === "waiting_for_commit") return hasMyCommit() ? "Waiting for opponent commit." : "Commit your local seed.";
+  if (stage === "waiting_for_reveal") return hasMyReveal() ? "Waiting for opponent reveal." : "Reveal your seed within 60 seconds.";
+  if (stage === "seed_ready") return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : "Pay street ante to start preflop.";
+  if (ACTIVE_STAGES.has(stage) && chain?.turn === ZERO_ADDRESS) {
+    return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : `Pay street ante for ${stage}.`;
+  }
   if (ACTIVE_STAGES.has(stage)) return sameAddress(chain.turn, state.account) ? "Your turn." : "Waiting for opponent.";
   if (stage === "showdown") return offchain?.winner ? `Suggested winner: ${labelAddress(offchain.winner)}.` : "Showdown result pending.";
   if (stage === "finished") return "Finished. Claim if you have a payout.";
@@ -1009,6 +1238,33 @@ function myConfirmed(chain) {
   return false;
 }
 
+function myStreetAntePaid(chain) {
+  if (!chain || !state.account) return false;
+  if (sameAddress(chain.player1, state.account)) return chain.streetAntePaid1;
+  if (sameAddress(chain.player2, state.account)) return chain.streetAntePaid2;
+  return false;
+}
+
+function hasMyCommit() {
+  const fair = state.offchainTable?.fair;
+  if (!fair || !state.account) return false;
+  if (sameAddress(state.offchainTable?.player1, state.account)) return Boolean(fair.commits?.player1);
+  if (sameAddress(state.offchainTable?.player2, state.account)) return Boolean(fair.commits?.player2);
+  return false;
+}
+
+function hasMyReveal() {
+  const fair = state.offchainTable?.fair;
+  if (!fair || !state.account) return false;
+  if (sameAddress(state.offchainTable?.player1, state.account)) return Boolean(fair.revealedSecrets?.player1);
+  if (sameAddress(state.offchainTable?.player2, state.account)) return Boolean(fair.revealedSecrets?.player2);
+  return false;
+}
+
+function currentHandId() {
+  return Number(state.chainTable?.handId || state.offchainTable?.handId || state.offchainTable?.fair?.handId || 0);
+}
+
 function isCurrentPlayer(chain) {
   return sameAddress(chain?.player1, state.account) || sameAddress(chain?.player2, state.account);
 }
@@ -1034,6 +1290,34 @@ function shortTx(hash) {
   return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
 }
 
+function shortHash(hash) {
+  return /^0x[a-fA-F0-9]{64}$/.test(String(hash || "")) ? `${hash.slice(0, 8)}...${hash.slice(-6)}` : "--";
+}
+
+function shortSecret(secret) {
+  const value = String(secret || "");
+  if (!value) return "--";
+  return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+
+function getOrCreateHandSecret(handId) {
+  const existing = readHandSecret(handId);
+  if (existing) return existing;
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const secret = `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  localStorage.setItem(handSecretKey(handId), secret);
+  return secret;
+}
+
+function readHandSecret(handId) {
+  return localStorage.getItem(handSecretKey(handId)) || "";
+}
+
+function handSecretKey(handId) {
+  return `pokerFairSecret:${tableIdBytes()}:${handId}:${String(state.account || "").toLowerCase()}`;
+}
+
 function formatEth(value) {
   const formatter = state.ethers?.formatEther;
   if (!formatter) return "0 ETH";
@@ -1051,6 +1335,37 @@ function formatCard(card) {
 
 function cardSuit(card) {
   return card.endsWith("h") || card.endsWith("d") ? "red" : "black";
+}
+
+function deterministicDeck(seed) {
+  const deck = [];
+  const suits = ["s", "h", "d", "c"];
+  const ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
+  for (const rank of ranks) {
+    for (const suit of suits) deck.push(`${rank}${suit}`);
+  }
+
+  let hash = hashSeed(seed);
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    hash = (hash * 1664525 + 1013904223) >>> 0;
+    const j = hash % (i + 1);
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+function hashSeed(seed) {
+  let hash = 2166136261;
+  for (const char of String(seed || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+async function buildDeckHash(deck) {
+  const { keccak256, toUtf8Bytes } = await getEthers();
+  return keccak256(toUtf8Bytes((deck || []).join("|")));
 }
 
 function withTimeout(promise, timeoutMs) {

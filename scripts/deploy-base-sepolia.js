@@ -37,9 +37,10 @@ async function main() {
   console.log("Deployer:", deployer.address);
   console.log("Fee recipient:", feeRecipient);
   console.log("Default stake:", hre.ethers.formatEther(defaultStake), "ETH");
+  console.log("Default street ante:", hre.ethers.formatEther(defaultStake / 10n || 1n), "ETH");
   console.log("Action timeout:", "60 seconds");
   console.log("Fee:", "2%");
-  console.log("Game type: two-player testnet poker MVP");
+  console.log("Game type: two-player testnet poker MVP with Provably Fair v1");
 
   const Escrow = await hre.ethers.getContractFactory("Escrow");
   const escrow = await Escrow.deploy(feeRecipient, defaultStake);
