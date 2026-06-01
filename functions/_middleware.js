@@ -27,7 +27,7 @@ export async function onRequest(context) {
       gameContractConfigured: Boolean(gameContractAddress(context)),
       chatKvConfigured: Boolean(chatKv(context)),
       adminConfigured: Boolean(context.env.ADMIN_TOKEN),
-      provablyFair: "chainlink-vrf-v2.5",
+      provablyFair: "commit-reveal-v1",
       game: "on-chain-poker-table",
       runtime: "cloudflare-pages"
     });
@@ -308,7 +308,7 @@ async function handleFairAction(context, rawTableId, action) {
   const walletAddress = normalizeAddress(body.walletAddress);
   const table = await readPokerTable(context, tableId);
   if (!table) return jsonResponse({ error: "Table not found" }, 404);
-  if (table.simulation) return jsonResponse({ error: "Bot tables skip Chainlink VRF." }, 400);
+  if (table.simulation) return jsonResponse({ error: "Bot tables skip commit-reveal fairness." }, 400);
   if (!walletAddress || !isTablePlayer(table, walletAddress)) {
     return jsonResponse({ error: "Only table players can update fair state." }, 403);
   }
@@ -338,6 +338,10 @@ async function handleFairAction(context, rawTableId, action) {
   }
 
   table.fair.reveals[walletAddress] = secret;
+
+  if (table.fair.reveals[normalizeAddress(table.player1)] && table.fair.reveals[normalizeAddress(table.player2)]) {
+    finalizeFairDeck(table, context);
+  }
 
   table.updatedAt = new Date().toISOString();
   await writePokerTable(context, table);
@@ -608,14 +612,11 @@ function dealTableCards(table) {
 function prepareFairHand(table, handId) {
   table.handId = handId || Number(table.handId || 0) + 1;
   table.fair = {
-    version: "vrf-v1",
+    version: "commit-reveal-v1",
     handId: table.handId,
     commits: {},
     reveals: {},
     chainData: "",
-    vrfRequestId: "",
-    vrfWord: "",
-    vrfReady: false,
     seed: "",
     deckHash: "",
     finalDeck: [],
@@ -639,12 +640,11 @@ function finalizeFairDeck(table, context) {
   const player2 = normalizeAddress(table.player2);
   const secret1 = table.fair.reveals[player1];
   const secret2 = table.fair.reveals[player2];
-  const vrfWord = BigInt(table.fair.vrfWord || 0);
   const contract = normalizeAddress(gameContractAddress(context)) || "0x0000000000000000000000000000000000000000";
   const seed = keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "uint256", "uint256", "address"],
-      [secret1, secret2, table.id, BigInt(table.fair.handId), vrfWord, BigInt(baseChainId(context)), contract]
+      ["string", "string", "bytes32", "uint256", "uint256", "address"],
+      [secret1, secret2, table.id, BigInt(table.fair.handId), BigInt(baseChainId(context)), contract]
     )
   );
   const deck = shuffleDeck(seed);
@@ -686,9 +686,6 @@ function applyChainHandSeed(table, handSeed) {
   if (handSeed.revealed1 && handSeed.secret1) table.fair.reveals[player1] = String(handSeed.secret1);
   if (handSeed.revealed2 && handSeed.secret2) table.fair.reveals[player2] = String(handSeed.secret2);
   const seed = normalizeBytes32(handSeed.seed);
-  if (handSeed.vrfRequestId) table.fair.vrfRequestId = String(handSeed.vrfRequestId);
-  if (handSeed.vrfWord) table.fair.vrfWord = String(handSeed.vrfWord);
-  table.fair.vrfReady = Boolean(handSeed.vrfReady);
   if (handSeed.ready && seed && seed !== zeroBytes32()) {
     finalizeFairDeckFromSeed(table, seed);
   }
@@ -717,7 +714,7 @@ function publicTable(table, viewer) {
     communityCards: visibleCommunity,
     createdAt: table.createdAt,
     updatedAt: table.updatedAt,
-    prototypeNotice: "Chainlink VRF creates the hand seed, but card dealing is still partially off-chain and not full mental poker/ZK."
+    prototypeNotice: "Commit-reveal creates the hand seed, but card dealing is still partially off-chain and not full mental poker/ZK."
   };
 }
 
@@ -725,7 +722,7 @@ function publicFairInfo(table, stage) {
   const fair = table.fair;
   if (!fair) {
     return {
-      version: "vrf-v1",
+      version: "commit-reveal-v1",
       handId: Number(table.handId || 0),
       commits: {},
       revealedSecrets: {},
@@ -738,7 +735,7 @@ function publicFairInfo(table, stage) {
 
   const showDeck = ["showdown", "finished"].includes(stage);
   return {
-    version: fair.version || "vrf-v1",
+    version: fair.version || "commit-reveal-v1",
     handId: Number(fair.handId || table.handId || 0),
     commits: {
       player1: fair.commits?.[normalizeAddress(table.player1)] || "",
@@ -749,9 +746,6 @@ function publicFairInfo(table, stage) {
       player2: fair.reveals?.[normalizeAddress(table.player2)] || ""
     },
     chainData: fair.chainData || "",
-    vrfRequestId: fair.vrfRequestId || "",
-    vrfWord: fair.vrfWord || "",
-    vrfReady: Boolean(fair.vrfReady),
     seed: fair.seed || "",
     deckHash: fair.deckHash || "",
     deck: showDeck ? fair.finalDeck || [] : [],
@@ -1042,8 +1036,7 @@ function normalizeStage(value) {
     "turn",
     "river",
     "showdown",
-    "finished",
-    "waiting_for_vrf"
+    "finished"
   ].includes(stage)
     ? stage
     : "";

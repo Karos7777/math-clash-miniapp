@@ -53,13 +53,10 @@ function main() {
     stake: "0.0001",
     handId: 1,
     fair: {
-      version: "vrf-v1",
+      version: "commit-reveal-v1",
       handId: 1,
       commits: {},
       reveals: {},
-      vrfRequestId: "1",
-      vrfWord: "123",
-      vrfReady: true,
       seed: "",
       deckHash: ""
     },
@@ -79,7 +76,10 @@ function main() {
     reloaded.pokerLobby.playerTables["0x0000000000000000000000000000000000000abc"] === reloaded.pokerLobby.waitingTableId,
     "player table index persists after reload"
   );
-  assert(reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].fair.version === "vrf-v1", "VRF fair state persists");
+  assert(
+    reloaded.pokerTables[reloaded.pokerLobby.waitingTableId].fair.version === "commit-reveal-v1",
+    "commit-reveal fair state persists"
+  );
   assert(reloaded.socialTasks.invite_friend.xpReward === 50, "social task data persists");
 
   fs.rmSync(dir, { recursive: true, force: true });

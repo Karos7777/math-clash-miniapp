@@ -30,8 +30,7 @@ const STAGES = [
   "turn",
   "river",
   "showdown",
-  "finished",
-  "waiting_for_vrf"
+  "finished"
 ];
 const ACTIVE_STAGES = new Set(["preflop", "flop", "turn", "river"]);
 const CONTRACT_ABI = [
@@ -39,7 +38,6 @@ const CONTRACT_ABI = [
   "function confirm(bytes32 tableId)",
   "function commitSeed(bytes32 tableId,uint256 handId,bytes32 commit)",
   "function revealSeed(bytes32 tableId,uint256 handId,string secret)",
-  "function requestVrfSeed(bytes32 tableId,uint256 handId)",
   "function timeoutReveal(bytes32 tableId,uint256 handId)",
   "function payStreetAnte(bytes32 tableId) payable",
   "function check(bytes32 tableId)",
@@ -50,11 +48,10 @@ const CONTRACT_ABI = [
   "function submitResult(bytes32 tableId,address winner)",
   "function claimWinnings()",
   "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
-  "function getHandSeed(bytes32 tableId,uint256 handId) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready,uint256 vrfRequestId,uint256 vrfWord,bool vrfReady))",
+  "function getHandSeed(bytes32 tableId,uint256 handId) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))",
   "function pendingWithdrawals(address) view returns (uint256)",
   "function defaultStake() view returns (uint256)",
   "function defaultStreetAnte() view returns (uint256)",
-  "function vrfConfigured() view returns (bool)",
   "event TableCreated(bytes32 indexed tableId, address indexed creator, uint256 stake)",
   "event PlayerJoined(bytes32 indexed tableId, address indexed player, uint8 seat, uint256 stake)",
   "event TableJoined(bytes32 indexed tableId, address indexed player, uint256 stake)",
@@ -65,8 +62,6 @@ const CONTRACT_ABI = [
   "event SeedCommitted(bytes32 indexed tableId, uint256 indexed handId, address indexed player, bytes32 commit)",
   "event SeedRevealed(bytes32 indexed tableId, uint256 indexed handId, address indexed player, string secret)",
   "event HandSeedReady(bytes32 indexed tableId, uint256 indexed handId, bytes32 seed)",
-  "event VrfSeedRequested(bytes32 indexed tableId, uint256 indexed handId, uint256 indexed requestId)",
-  "event VrfSeedFulfilled(bytes32 indexed tableId, uint256 indexed handId, uint256 indexed requestId, uint256 randomWord)",
   "event RevealTimedOut(bytes32 indexed tableId, uint256 indexed handId, address indexed inactivePlayer, address winner)",
   "event PlayerChecked(bytes32 indexed tableId, address indexed player)",
   "event PlayerBet(bytes32 indexed tableId, address indexed player, uint256 amount)",
@@ -168,8 +163,6 @@ const elements = {
   fairCommit2: $("#fairCommit2"),
   fairSecret1: $("#fairSecret1"),
   fairSecret2: $("#fairSecret2"),
-  fairVrfRequest: $("#fairVrfRequest"),
-  fairVrfWord: $("#fairVrfWord"),
   fairSeed: $("#fairSeed"),
   fairDeckHash: $("#fairDeckHash"),
   verifyHandButton: $("#verifyHandButton"),
@@ -564,10 +557,7 @@ async function readChainHandSeed(table) {
       revealed1: Boolean(hand.revealed1),
       revealed2: Boolean(hand.revealed2),
       seed: hand.seed,
-      ready: Boolean(hand.ready),
-      vrfRequestId: BigInt(hand.vrfRequestId || 0).toString(),
-      vrfWord: BigInt(hand.vrfWord || 0).toString(),
-      vrfReady: Boolean(hand.vrfReady)
+      ready: Boolean(hand.ready)
     };
   } catch {
     return null;
@@ -629,8 +619,6 @@ function renderFairInfo(fair, stage) {
   elements.fairCommit2.textContent = shortHash(info.commits?.player2);
   elements.fairSecret1.textContent = info.revealedSecrets?.player1 ? shortSecret(info.revealedSecrets.player1) : "--";
   elements.fairSecret2.textContent = info.revealedSecrets?.player2 ? shortSecret(info.revealedSecrets.player2) : "--";
-  elements.fairVrfRequest.textContent = info.vrfRequestId && info.vrfRequestId !== "0" ? `#${info.vrfRequestId}` : "--";
-  elements.fairVrfWord.textContent = info.vrfWord && info.vrfWord !== "0" ? `${info.vrfWord.slice(0, 10)}...` : "--";
   elements.fairSeed.textContent = shortHash(info.seed);
   elements.fairDeckHash.textContent = shortHash(info.deckHash);
   elements.verifyHandButton.disabled = state.busy || !info.verifyAvailable;
@@ -639,14 +627,12 @@ function renderFairInfo(fair, stage) {
     elements.fairVerifyStatus.textContent = "Commit your local secret. Opponent cannot see it yet.";
   } else if (stage === "waiting_for_reveal") {
     elements.fairVerifyStatus.textContent = "Reveal your local secret within 60 seconds.";
-  } else if (stage === "waiting_for_vrf") {
-    elements.fairVerifyStatus.textContent = "Both secrets are revealed. Waiting for Chainlink VRF to return the hand seed.";
   } else if (info.verifyAvailable && !info.deck?.length) {
     elements.fairVerifyStatus.textContent = "Seed and deck hash are ready. Full deck is revealed after showdown.";
   } else if (info.deck?.length) {
     elements.fairVerifyStatus.textContent = "Full deck is public. Press Verify hand to recompute it.";
   } else {
-    elements.fairVerifyStatus.textContent = "Chainlink VRF creates the hand seed after both players reveal their local secrets.";
+    elements.fairVerifyStatus.textContent = "Commit-reveal creates the hand seed after both players reveal their local secrets.";
   }
 }
 
@@ -785,7 +771,7 @@ async function revealSeed() {
     elements.tableStatus.textContent = `Transaction pending: ${shortTx(tx.hash)}`;
     await tx.wait();
     await postFairAction("reveal", { handId, secret });
-    elements.tableStatus.textContent = "Seed revealed. Waiting for Chainlink VRF.";
+    elements.tableStatus.textContent = "Seed revealed. Cards will be dealt after both reveals.";
     await refreshTable();
   } catch (error) {
     showError(walletError(error, "Reveal seed failed."));
@@ -1070,8 +1056,6 @@ function attachEvents() {
     "SeedCommitted",
     "SeedRevealed",
     "HandSeedReady",
-    "VrfSeedRequested",
-    "VrfSeedFulfilled",
     "RevealTimedOut",
     "ActionSubmitted",
     "TableSettled",
@@ -1235,15 +1219,15 @@ async function verifyFairHand() {
 
     const deck = deterministicDeck(fair.seed || "");
     const hash = await buildDeckHash(deck);
-    const expectedSeed = await buildVrfSeed(secret1, secret2, state.tableId, handId, fair.vrfWord || "0");
+    const expectedSeed = await buildCommitRevealSeed(secret1, secret2, state.tableId, handId);
     const seedOk = expectedSeed.toLowerCase() === String(fair.seed || "").toLowerCase();
     const deckOk = hash.toLowerCase() === String(fair.deckHash || "").toLowerCase();
     const publishedDeckOk = !fair.deck?.length || fair.deck.join("|") === deck.join("|");
 
     elements.fairVerifyStatus.textContent =
       commitsOk && seedOk && deckOk && publishedDeckOk
-        ? "Verified: commits, Chainlink VRF seed, deck hash, and published deck match."
-        : "Verification failed. Check commits, secrets, VRF word, seed, or deck hash.";
+        ? "Verified: commits, seed, deck hash, and published deck match."
+        : "Verification failed. Check commits, secrets, seed, or deck hash.";
   } catch (error) {
     elements.fairVerifyStatus.textContent = error.message || "Verification failed.";
   }
@@ -1266,12 +1250,12 @@ async function buildSeedCommit(secret, playerAddress, tableId, handId) {
   );
 }
 
-async function buildVrfSeed(secret1, secret2, tableId, handId, vrfWord) {
+async function buildCommitRevealSeed(secret1, secret2, tableId, handId) {
   const { keccak256, solidityPacked } = await getEthers();
   return keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "uint256", "uint256", "address"],
-      [secret1, secret2, tableId, BigInt(handId), BigInt(vrfWord || 0), BigInt(BASE_CHAIN.id), CONTRACT_ADDRESS]
+      ["string", "string", "bytes32", "uint256", "uint256", "address"],
+      [secret1, secret2, tableId, BigInt(handId), BigInt(BASE_CHAIN.id), CONTRACT_ADDRESS]
     )
   );
 }
@@ -1341,7 +1325,6 @@ function tableStatusText(stage, chain, offchain) {
   if (stage === "confirming") return "Both players must confirm within 60 seconds.";
   if (stage === "waiting_for_commit") return hasMyCommit() ? "Waiting for opponent commit." : "Commit your local seed.";
   if (stage === "waiting_for_reveal") return hasMyReveal() ? "Waiting for opponent reveal." : "Reveal your seed within 60 seconds.";
-  if (stage === "waiting_for_vrf") return "Waiting for Chainlink VRF. Cards appear after the VRF callback.";
   if (stage === "seed_ready") return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : "Pay street ante to start preflop.";
   if (ACTIVE_STAGES.has(stage) && chain?.turn === ZERO_ADDRESS) {
     return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : `Pay street ante for ${stage}.`;

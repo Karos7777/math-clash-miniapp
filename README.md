@@ -7,9 +7,9 @@ The app has two screens:
 - `/` lobby: connect wallet and press Start Game.
 - `/#/table/:tableId` table: player1/player2, pot, stake, stage, turn, 60 second timer, actions, cards, and table chat.
 
-Money movement is handled by the Solidity contract. Lobby matching, table UI state, Chainlink VRF dealing receipts, prototype cards, and chat are stored in Cloudflare KV on Pages, with local JSON storage for development.
+Money movement is handled by the Solidity contract. Lobby matching, table UI state, commit-reveal dealing receipts, prototype cards, and chat are stored in Cloudflare KV on Pages, with local JSON storage for development.
 
-Important: Chainlink VRF improves randomness, but card dealing is still partially off-chain and not full mental poker/ZK. This is fine for Base Sepolia testing, but production poker needs a stronger dealing design.
+Important: Commit-reveal avoids Chainlink fees/subscriptions and gives a verifiable seed, but card dealing is still partially off-chain and not full mental poker/ZK. This is fine for Base Sepolia testing, but production poker needs a stronger dealing design.
 
 ## Contract
 
@@ -20,8 +20,7 @@ Main flow:
 - `joinTable(bytes32 tableId)` payable: player sends the ETH stake for a table.
 - `confirm(bytes32 tableId)`: after both players joined, each player confirms by transaction within 60 seconds.
 - `commitSeed(bytes32 tableId,uint256 handId,bytes32 commit)`: commit a hidden local seed before cards are dealt.
-- `revealSeed(bytes32 tableId,uint256 handId,string secret)`: reveal the local seed within 60 seconds. After both reveal, the contract requests Chainlink VRF.
-- `requestVrfSeed(bytes32 tableId,uint256 handId)`: retry the VRF request if both reveals are present and no request was made.
+- `revealSeed(bytes32 tableId,uint256 handId,string secret)`: reveal the local seed within 60 seconds. After both players reveal, the contract creates the final seed.
 - `timeoutReveal(bytes32 tableId,uint256 handId)`: punish/refund a stalled commit/reveal phase after timeout.
 - `payStreetAnte(bytes32 tableId)` payable: each player sends the small street ante before preflop/flop/turn/river betting opens.
 - `check(bytes32 tableId)`: pass action if there is no open bet.
@@ -35,7 +34,7 @@ Main flow:
 State flow:
 
 ```text
-waiting -> confirming -> waiting_for_commit -> waiting_for_reveal -> waiting_for_vrf -> seed_ready -> preflop -> flop -> turn -> river -> showdown -> finished
+waiting -> confirming -> waiting_for_commit -> waiting_for_reveal -> seed_ready -> preflop -> flop -> turn -> river -> showdown -> finished
 ```
 
 Payout notes:
@@ -46,7 +45,7 @@ Payout notes:
 - Winnings are credited to `pendingWithdrawals`; players claim after the table is finished.
 - Private keys are never used in the frontend, `public/config.js`, or GitHub.
 
-## Chainlink VRF Fairness
+## Commit-Reveal Fairness
 
 Before cards are dealt, both players generate a local secret in their browser.
 
@@ -54,16 +53,15 @@ Flow:
 
 - Commit: the browser sends `keccak256(secret + playerAddress + tableId + handId)` to the contract.
 - Reveal: after both commits are present, each player reveals the secret within 60 seconds.
-- VRF request: after two reveals, the contract requests Chainlink VRF v2.5.
-- Seed: when the VRF callback arrives, the contract combines `secret1`, `secret2`, `tableId`, `handId`, `vrfWord`, chain id, and the contract address into one final seed.
+- Seed: after two reveals, the contract combines `secret1`, `secret2`, `tableId`, `handId`, chain id, and the contract address into one final seed.
 - Deck: Cloudflare deterministically shuffles a 52-card deck from that seed, stores the deck hash, and only returns the viewer's own private cards before showdown.
-- Verify: after showdown/finish, the UI can recompute commits, VRF seed, deck, and deck hash from the revealed secrets and VRF word.
+- Verify: after showdown/finish, the UI can recompute commits, seed, deck, and deck hash from the revealed secrets.
 
-This prevents one player from choosing a seed after seeing the other seed and removes the old backend/blockhash randomness source. It does not make card custody fully trustless because Cloudflare still performs the final off-chain dealing for this prototype.
+This prevents one player from choosing a seed after seeing the other seed and removes Chainlink subscription requirements. It does not make card custody fully trustless because Cloudflare still performs the final off-chain dealing for this prototype. If a player refuses to reveal, timeout/refund/settlement logic handles the stalled hand.
 
 Roadmap:
 
-- v2: add stronger card custody and server audit logs around the VRF seed.
+- v2: optionally add Chainlink VRF later if the project needs stronger public randomness.
 - v3: replace off-chain custody with encrypted shuffle / mental poker or ZK-style dealing.
 
 ## Cloudflare Pages
@@ -134,15 +132,7 @@ DEPLOYER_PRIVATE_KEY=0x...
 BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 FEE_RECIPIENT_ADDRESS=0xYourFeeWallet
 DEFAULT_STAKE_ETH=0.0001
-VRF_SUBSCRIPTION_ID=123
-VRF_COORDINATOR=0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE
-VRF_KEY_HASH=0x9e1344a1247c8a1785d0a4681a27152bffdb43666ae5bf7d14d24a5efd44bf71
-VRF_CALLBACK_GAS_LIMIT=300000
-VRF_REQUEST_CONFIRMATIONS=3
-VRF_NATIVE_PAYMENT=true
 ```
-
-Create a Chainlink VRF v2.5 subscription first, fund it with testnet ETH/native payment, deploy the contract with the subscription id, then add the deployed contract address as a subscription consumer.
 
 Deploy:
 

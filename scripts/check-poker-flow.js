@@ -29,13 +29,9 @@ async function main() {
   const stake = hre.ethers.parseEther("0.0001");
   const streetAnte = stake / 10n;
   const tableId = hre.ethers.keccak256(hre.ethers.toUtf8Bytes("audit-table"));
-  const keyHash = `0x${"9e".repeat(32)}`;
 
-  const MockVrf = await hre.ethers.getContractFactory("MockVrfCoordinator");
-  const mockVrf = await MockVrf.deploy();
-  await mockVrf.waitForDeployment();
   const Escrow = await hre.ethers.getContractFactory("Escrow");
-  const escrow = await Escrow.deploy(owner.address, stake, await mockVrf.getAddress(), 1n, keyHash, 300000, 3, true);
+  const escrow = await Escrow.deploy(owner.address, stake);
   await escrow.waitForDeployment();
   contractInterface = escrow.interface;
 
@@ -64,17 +60,9 @@ async function main() {
   assert(Number(table.stage) === 3, "stage is waiting_for_reveal");
 
   await expectEvent(escrow.connect(player1).revealSeed(tableId, 1n, secret1), "SeedRevealed");
-  await expectEvent(escrow.connect(player2).revealSeed(tableId, 1n, secret2), "VrfSeedRequested");
-  table = await escrow.getTable(tableId);
-  assert(Number(table.stage) === 12, "stage is waiting_for_vrf");
-
-  let hand = await escrow.getHandSeed(tableId, 1n);
-  assert(hand.vrfRequestId > 0n, "VRF request id recorded");
-  await expectEvent(mockVrf.fulfill(hand.vrfRequestId, 123456789n), "HandSeedReady");
-  hand = await escrow.getHandSeed(tableId, 1n);
+  await expectEvent(escrow.connect(player2).revealSeed(tableId, 1n, secret2), "HandSeedReady");
+  const hand = await escrow.getHandSeed(tableId, 1n);
   assert(hand.ready, "hand seed ready");
-  assert(hand.vrfReady, "VRF word ready");
-  assert(hand.vrfWord === 123456789n, "VRF word stored");
   assert(hand.seed !== hre.ethers.ZeroHash, "seed is nonzero");
 
   await expectEvent(escrow.connect(player1).payStreetAnte(tableId, { value: streetAnte }), "StreetAntePaid");

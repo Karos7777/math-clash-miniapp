@@ -151,16 +151,15 @@ async function main() {
     ["SeedCommitted", "StageChanged"]
   );
   await expectEvent(contractTx(player1, "revealSeed", [tableId, 1n, secret1]), "SeedRevealed");
-  await expectEvent(contractTx(player2, "revealSeed", [tableId, 1n, secret2], { gasLimit: 800000n }), "VrfSeedRequested");
+  await expectEvent(contractTx(player2, "revealSeed", [tableId, 1n, secret2]), "HandSeedReady");
 
   const hand = await waitFor(
-    "Chainlink VRF hand seed",
+    "commit-reveal hand seed",
     () => escrow.getHandSeed(tableId, 1n),
-    (value) => value.ready && value.vrfReady && value.seed !== hre.ethers.ZeroHash,
+    (value) => value.ready && value.seed !== hre.ethers.ZeroHash,
     60
   );
   assert(hand.ready, "Base Sepolia seed ready");
-  assert(hand.vrfReady, "Base Sepolia VRF word ready");
   assert(hand.seed !== hre.ethers.ZeroHash, "Base Sepolia seed nonzero");
 
   await expectEvents(
