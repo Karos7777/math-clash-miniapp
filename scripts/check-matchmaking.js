@@ -25,6 +25,8 @@ function main() {
     id: tableId,
     status: "waiting",
     stage: "waiting",
+    maxSeats: 6,
+    players: ["0x1111111111111111111111111111111111111111"],
     player1: "0x1111111111111111111111111111111111111111",
     player2: "",
     stake: "0.0001",
@@ -41,16 +43,18 @@ function main() {
   );
 
   const table = reloaded.pokerTables[tableId];
+  table.players.push("0x2222222222222222222222222222222222222222");
   table.player2 = "0x2222222222222222222222222222222222222222";
-  table.status = "confirming";
-  table.stage = "confirming";
+  table.status = "waiting";
+  table.stage = "waiting";
   reloaded.pokerLobby.waitingTableId = "";
   reloaded.pokerLobby.playerTables["0x2222222222222222222222222222222222222222"] = tableId;
   storage.saveState(reloaded);
 
   const matched = normalizeState(storage.loadState()).pokerTables[tableId];
   assert(matched.player1 && matched.player2, "second player can fill waiting table");
-  assert(matched.stage === "confirming", "matched table restores confirming stage");
+  assert(Array.isArray(matched.players) && matched.players.length === 2, "visible table tracks seated players");
+  assert(matched.stage === "waiting", "matched table stays open until players start on-chain hand");
   assert(
     normalizeState(storage.loadState()).pokerLobby.playerTables["0x2222222222222222222222222222222222222222"] === tableId,
     "second player can restore matched table"

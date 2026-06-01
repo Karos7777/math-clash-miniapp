@@ -286,7 +286,7 @@ input:disabled {
 
 .poker-table {
   position: relative;
-  min-height: 560px;
+  min-height: 620px;
   overflow: hidden;
   border-radius: 8px;
   background:
@@ -299,7 +299,7 @@ input:disabled {
   position: absolute;
   left: 8%;
   right: 8%;
-  top: 132px;
+  top: 178px;
   height: 278px;
   display: grid;
   place-items: center;
@@ -386,7 +386,27 @@ input:disabled {
 
 .seat-two {
   right: 8%;
-  bottom: 30px;
+  top: 30px;
+}
+
+.seat-three {
+  left: 2.5%;
+  top: 262px;
+}
+
+.seat-four {
+  right: 2.5%;
+  top: 262px;
+}
+
+.seat-five {
+  left: 8%;
+  bottom: 28px;
+}
+
+.seat-six {
+  right: 8%;
+  bottom: 28px;
 }
 
 .seat span {
@@ -476,6 +496,60 @@ input:disabled {
 
 .chat-panel {
   padding: 14px;
+}
+
+.lobby-tables-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.lobby-tables {
+  display: grid;
+  gap: 10px;
+}
+
+.lobby-table-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.lobby-table-card strong,
+.lobby-table-card span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.lobby-table-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.lobby-table-meta span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.lobby-table-card button {
+  min-width: 92px;
+  min-height: 40px;
+  border-radius: 8px;
+  background: var(--charcoal);
+  color: #ffffff;
+  font-weight: 1000;
 }
 
 .fair-panel {
@@ -765,13 +839,13 @@ input:disabled {
   }
 
   .poker-table {
-    min-height: 430px;
+    min-height: 560px;
   }
 
   .felt {
     left: 4%;
     right: 4%;
-    top: 116px;
+    top: 184px;
     height: 198px;
     border-width: 8px;
   }
@@ -788,6 +862,26 @@ input:disabled {
   }
 
   .seat-two {
+    right: 4%;
+    top: 24px;
+  }
+
+  .seat-three {
+    left: 4%;
+    top: 108px;
+  }
+
+  .seat-four {
+    right: 4%;
+    top: 108px;
+  }
+
+  .seat-five {
+    left: 4%;
+    bottom: 24px;
+  }
+
+  .seat-six {
     right: 4%;
     bottom: 24px;
   }

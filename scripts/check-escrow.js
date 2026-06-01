@@ -13,8 +13,8 @@ const ABI = [
   "function ACTION_TIMEOUT() view returns (uint256)",
   "function DEVELOPER_FEE_BPS() view returns (uint256)",
   "function pendingWithdrawals(address) view returns (uint256)",
-  "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
-  "function getHandSeed(bytes32,uint256) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))"
+  "function getTable(bytes32) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded,address[6] players,uint8 playerCount,bool[6] confirmed,bool[6] active,bool[6] folded,bool[6] streetAntePaid,uint256[6] stageBets,bool[6] acted,uint8 activeCount,uint8 turnIndex,address showdownLeader,uint8 showdownLeaderVotes))",
+  "function getHandSeed(bytes32,uint256) view returns (tuple(bytes32[6] commits,string[6] secrets,bool[6] revealed,bytes32 seed,bool ready))"
 ];
 
 const DEFAULT_RPC = "https://sepolia.base.org";
@@ -61,6 +61,7 @@ async function main() {
 
   const requiredSelectors = [
     "joinTable(bytes32)",
+    "startHand(bytes32)",
     "confirm(bytes32)",
     "commitSeed(bytes32,uint256,bytes32)",
     "revealSeed(bytes32,uint256,string)",
@@ -85,6 +86,7 @@ async function main() {
   const requiredEvents = [
     "TableCreated(bytes32,address,uint256)",
     "PlayerJoined(bytes32,address,uint8,uint256)",
+    "TableSeatingUpdated(bytes32,uint8,uint8)",
     "PlayerConfirmed(bytes32,address)",
     "SeedCommitted(bytes32,uint256,address,bytes32)",
     "SeedRevealed(bytes32,uint256,address,string)",

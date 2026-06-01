@@ -11,7 +11,7 @@
     <meta property="og:title" content="__APP_NAME__">
     <meta
       property="og:description"
-      content="Join a two-player Base Sepolia table, confirm with a transaction, act on turn, and claim the testnet pot."
+      content="Choose a six-seat Base Sepolia table, confirm with a transaction, act on turn, and claim the testnet pot."
     >
     <meta property="og:image" content="__APP_URL__/assets/og.png">
     <meta name="fc:miniapp" content='__MINIAPP_EMBED_JSON__'>
@@ -41,17 +41,27 @@
         <section class="screen lobby-screen" id="lobbyScreen">
           <div class="hero-panel">
             <p class="eyebrow">Lobby</p>
-            <h2>Find a heads-up table</h2>
+            <h2>Choose a poker table</h2>
             <p class="muted">
-              Connect a wallet, start a testnet table, then confirm your stake on Base Sepolia when the second player arrives.
+              Connect a wallet, create a low-limit testnet table, or join a visible open table with up to six seats.
             </p>
             <div class="lobby-actions">
-              <button class="primary-action" id="startGameButton" type="button" disabled>Start Game</button>
+              <button class="primary-action" id="startGameButton" type="button" disabled>Create Table</button>
               <span id="lobbyStatus">Connect wallet to start.</span>
             </div>
           </div>
 
           <aside class="lobby-side">
+            <section class="chat-panel lobby-tables-panel">
+              <div class="section-title">
+                <p class="eyebrow">Open tables</p>
+                <button class="ghost-button compact-button" id="refreshTablesButton" type="button">Refresh</button>
+              </div>
+              <div class="lobby-tables" id="lobbyTables">
+                <p class="status-line">Connect wallet to see and join open tables.</p>
+              </div>
+            </section>
+
             <div class="info-panel">
               <div>
                 <span>Stake</span>
@@ -93,12 +103,28 @@
           <section class="table-layout">
             <div class="poker-table">
               <div class="seat seat-one">
-                <span>Player 1</span>
+                <span>Seat 1</span>
                 <strong id="player1Label">Waiting</strong>
               </div>
               <div class="seat seat-two">
-                <span>Player 2</span>
+                <span>Seat 2</span>
                 <strong id="player2Label">Waiting</strong>
+              </div>
+              <div class="seat seat-three">
+                <span>Seat 3</span>
+                <strong id="player3Label">Open</strong>
+              </div>
+              <div class="seat seat-four">
+                <span>Seat 4</span>
+                <strong id="player4Label">Open</strong>
+              </div>
+              <div class="seat seat-five">
+                <span>Seat 5</span>
+                <strong id="player5Label">Open</strong>
+              </div>
+              <div class="seat seat-six">
+                <span>Seat 6</span>
+                <strong id="player6Label">Open</strong>
               </div>
 
               <div class="felt">

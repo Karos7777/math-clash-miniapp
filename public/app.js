@@ -47,8 +47,8 @@ const CONTRACT_ABI = [
   "function timeout(bytes32 tableId)",
   "function submitResult(bytes32 tableId,address winner)",
   "function claimWinnings()",
-  "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded))",
-  "function getHandSeed(bytes32 tableId,uint256 handId) view returns (tuple(bytes32 commit1,bytes32 commit2,string secret1,string secret2,bool revealed1,bool revealed2,bytes32 seed,bool ready))",
+  "function getTable(bytes32 tableId) view returns (tuple(bool exists,address player1,address player2,uint256 stake,uint256 pot,uint8 stage,address turn,uint256 actionDeadline,uint256 currentBet,uint8 actionsThisStage,bool confirmed1,bool confirmed2,uint256 handId,uint256 streetAnte,bool streetAntePaid1,bool streetAntePaid2,address winner,bool refunded,address[6] players,uint8 playerCount,bool[6] confirmed,bool[6] active,bool[6] folded,bool[6] streetAntePaid,uint256[6] stageBets,bool[6] acted,uint8 activeCount,uint8 turnIndex,address showdownLeader,uint8 showdownLeaderVotes))",
+  "function getHandSeed(bytes32 tableId,uint256 handId) view returns (tuple(bytes32[6] commits,string[6] secrets,bool[6] revealed,bytes32 seed,bool ready))",
   "function pendingWithdrawals(address) view returns (uint256)",
   "function defaultStake() view returns (uint256)",
   "function defaultStreetAnte() view returns (uint256)",
@@ -90,6 +90,7 @@ const state = {
   readContract: null,
   writeContract: null,
   tableId: "",
+  lobbyTables: [],
   offchainTable: null,
   chainTable: null,
   chainHandSeed: null,
@@ -114,6 +115,8 @@ const elements = {
   lobbyStake: $("#lobbyStake"),
   lobbyNetwork: $("#lobbyNetwork"),
   lobbyContract: $("#lobbyContract"),
+  lobbyTables: $("#lobbyTables"),
+  refreshTablesButton: $("#refreshTablesButton"),
   lobbyLastChat: $("#lobbyLastChat"),
   lobbyChatForm: $("#lobbyChatForm"),
   lobbyChatInput: $("#lobbyChatInput"),
@@ -122,6 +125,10 @@ const elements = {
   timerLabel: $("#timerLabel"),
   player1Label: $("#player1Label"),
   player2Label: $("#player2Label"),
+  player3Label: $("#player3Label"),
+  player4Label: $("#player4Label"),
+  player5Label: $("#player5Label"),
+  player6Label: $("#player6Label"),
   potLabel: $("#potLabel"),
   stakeLabel: $("#stakeLabel"),
   stageLabel: $("#stageLabel"),
@@ -194,6 +201,7 @@ function bindEvents() {
     window.location.hash = "#/admin";
   });
   elements.startGameButton.addEventListener("click", startGame);
+  elements.refreshTablesButton.addEventListener("click", refreshLobbyTables);
   elements.backToLobbyButton.addEventListener("click", () => {
     window.location.hash = "";
   });
@@ -281,6 +289,7 @@ function renderRoute() {
     state.offchainTable = null;
     state.chainTable = null;
     refreshLobbyChat();
+    refreshLobbyTables();
     renderControls();
   }
 }
@@ -336,6 +345,7 @@ async function connectWallet(option) {
     closeWalletPicker();
     setLobbyStatus("Wallet connected.");
     renderControls();
+    await refreshLobbyTables().catch(() => {});
     await restoreActiveTable({ navigate: !state.tableId && window.location.hash !== "#/admin" }).catch(() => {});
     if (state.tableId) await refreshTable();
   } catch (error) {
@@ -351,6 +361,7 @@ async function refreshWalletFromProvider() {
     state.account = accounts[0];
     elements.connectWallet.textContent = shortAddress(state.account);
     await rebuildWriteContract();
+    await refreshLobbyTables().catch(() => {});
   }
   renderControls();
 }
@@ -441,11 +452,11 @@ async function startGame() {
   }
 
   try {
-    setBusy(true, "Finding table...");
+    setBusy(true, "Creating table...");
     const response = await fetch("/api/lobby/join", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ walletAddress: state.account })
+      body: JSON.stringify({ walletAddress: state.account, create: true })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not join lobby.");
@@ -455,6 +466,84 @@ async function startGame() {
     showError(error.message || "Lobby unavailable.");
   } finally {
     setBusy(false);
+  }
+}
+
+async function joinLobbyTable(tableId) {
+  if (!state.account) {
+    setLobbyStatus("Wallet not connected.");
+    return;
+  }
+
+  try {
+    setBusy(true, "Joining table...");
+    const response = await fetch("/api/lobby/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ walletAddress: state.account, tableId })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not join table.");
+    rememberLastTable(data.table.id);
+    window.location.hash = `#/table/${data.table.id}`;
+  } catch (error) {
+    showError(error.message || "Lobby unavailable.");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function refreshLobbyTables() {
+  try {
+    const url = new URL("/api/lobby/tables", window.location.origin);
+    if (state.account) url.searchParams.set("walletAddress", state.account);
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) return;
+    const data = await response.json();
+    state.lobbyTables = Array.isArray(data.tables) ? data.tables : [];
+    renderLobbyTables();
+  } catch {
+    elements.lobbyTables.innerHTML = '<p class="status-line">Tables unavailable.</p>';
+  }
+}
+
+function renderLobbyTables() {
+  elements.lobbyTables.innerHTML = "";
+  const tables = state.lobbyTables || [];
+  if (!tables.length) {
+    const empty = document.createElement("p");
+    empty.className = "status-line";
+    empty.textContent = state.account ? "No open tables yet. Create one and wait in lobby chat." : "Connect wallet to see and join open tables.";
+    elements.lobbyTables.append(empty);
+    return;
+  }
+
+  for (const table of tables) {
+    const players = tablePlayers(table);
+    const maxSeats = Number(table.maxSeats || CONFIG.maxSeats || 6);
+    const isSeated = players.some((player) => sameAddress(player, state.account));
+    const isOpen = table.stage === "waiting" && players.length < maxSeats;
+    const row = document.createElement("div");
+    row.className = "lobby-table-card";
+    const info = document.createElement("div");
+    info.innerHTML = `
+      <strong>${shortTableId(table.id)}</strong>
+      <div class="lobby-table-meta">
+        <span>${players.length}/${maxSeats} seats</span>
+        <span>${table.stage || "waiting"}</span>
+        <span>${table.stake || CONFIG.defaultStakeEth || "0.0001"} ETH</span>
+      </div>
+    `;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = isSeated ? "Open" : "Join";
+    button.disabled = state.busy || !state.account || (!isSeated && !isOpen);
+    button.addEventListener("click", () => {
+      if (isSeated) window.location.hash = `#/table/${table.id}`;
+      else joinLobbyTable(table.id);
+    });
+    row.append(info, button);
+    elements.lobbyTables.append(row);
   }
 }
 
@@ -475,7 +564,7 @@ async function restoreActiveTable({ navigate = false } = {}) {
 
   rememberLastTable(table.id);
   setLobbyStatus(
-    table.player2
+    tablePlayers(table).length >= 2
       ? `Active table found: ${shortTableId(table.id)}.`
       : `Waiting table found: ${shortTableId(table.id)}.`
   );
@@ -517,10 +606,16 @@ async function refreshChainTable() {
     const table = result?.exists === undefined && result?.[0] ? result[0] : result;
     const pending = state.account ? await state.readContract.pendingWithdrawals(state.account) : 0n;
     state.pendingClaim = pending;
+    const players = Array.from(table.players || [])
+      .map((player) => String(player || ""))
+      .filter((player) => isAddress(player) && player !== ZERO_ADDRESS)
+      .slice(0, Number(table.playerCount || 0) || 6);
     const parsedTable = {
       exists: Boolean(table.exists),
       player1: table.player1,
       player2: table.player2,
+      players: players.length ? players : [table.player1, table.player2].filter((player) => isAddress(player) && player !== ZERO_ADDRESS),
+      playerCount: Number(table.playerCount || players.length || 0),
       stake: table.stake,
       pot: table.pot,
       stage: STAGES[Number(table.stage)] || "waiting",
@@ -529,10 +624,16 @@ async function refreshChainTable() {
       currentBet: table.currentBet,
       confirmed1: Boolean(table.confirmed1),
       confirmed2: Boolean(table.confirmed2),
+      confirmed: Array.from(table.confirmed || []).map(Boolean),
       handId: Number(table.handId || 0),
       streetAnte: table.streetAnte || 0n,
       streetAntePaid1: Boolean(table.streetAntePaid1),
       streetAntePaid2: Boolean(table.streetAntePaid2),
+      streetAntePaid: Array.from(table.streetAntePaid || []).map(Boolean),
+      stageBets: Array.from(table.stageBets || []),
+      active: Array.from(table.active || []).map(Boolean),
+      folded: Array.from(table.folded || []).map(Boolean),
+      activeCount: Number(table.activeCount || 0),
       winner: table.winner,
       refunded: Boolean(table.refunded)
     };
@@ -550,12 +651,9 @@ async function readChainHandSeed(table) {
   try {
     const hand = await state.readContract.getHandSeed(tableIdBytes(), BigInt(table.handId));
     return {
-      commit1: hand.commit1,
-      commit2: hand.commit2,
-      secret1: hand.secret1,
-      secret2: hand.secret2,
-      revealed1: Boolean(hand.revealed1),
-      revealed2: Boolean(hand.revealed2),
+      commits: Array.from(hand.commits || [hand.commit1, hand.commit2]),
+      secrets: Array.from(hand.secrets || [hand.secret1, hand.secret2]),
+      revealed: Array.from(hand.revealed || [hand.revealed1, hand.revealed2]).map(Boolean),
       seed: hand.seed,
       ready: Boolean(hand.ready)
     };
@@ -577,6 +675,7 @@ async function syncOffchainWithChain() {
         handSeed: state.chainHandSeed,
         player1: state.chainTable.player1,
         player2: state.chainTable.player2,
+        players: state.chainTable.players || [],
         winner: isAddress(state.chainTable.winner) && state.chainTable.winner !== ZERO_ADDRESS
           ? state.chainTable.winner
           : ""
@@ -593,13 +692,11 @@ function renderTable() {
   const offchain = state.offchainTable || {};
   const simulated = Boolean(offchain.simulation);
   const stage = !simulated && chain.exists ? chain.stage : offchain.stage || "waiting";
-  const player1 = !simulated && chain.exists ? chain.player1 : offchain.player1 || "";
-  const player2 = !simulated && chain.exists ? chain.player2 : offchain.player2 || "";
+  const players = tablePlayers(!simulated && chain.exists ? chain : offchain);
   const pot = simulated ? `${offchain.pot || "0"} ETH` : chain.exists ? formatEth(chain.pot || 0n) : "0 ETH";
   const stake = chain.exists && chain.stake ? formatEth(chain.stake) : `${CONFIG.defaultStakeEth || "0.0001"} ETH`;
 
-  elements.player1Label.textContent = player1 ? labelPlayer(player1) : "Waiting";
-  elements.player2Label.textContent = player2 ? labelPlayer(player2) : "Waiting";
+  renderSeats(players, Number(offchain.maxSeats || CONFIG.maxSeats || 6));
   elements.potLabel.textContent = pot;
   elements.stakeLabel.textContent = `${stake} stake`;
   elements.stageLabel.textContent = stage;
@@ -613,6 +710,20 @@ function renderTable() {
   renderTimer();
 }
 
+function renderSeats(players, maxSeats = 6) {
+  const labels = [
+    elements.player1Label,
+    elements.player2Label,
+    elements.player3Label,
+    elements.player4Label,
+    elements.player5Label,
+    elements.player6Label
+  ];
+  for (let i = 0; i < labels.length; i += 1) {
+    labels[i].textContent = i < maxSeats ? (players[i] ? labelPlayer(players[i]) : "Open") : "--";
+  }
+}
+
 function renderFairInfo(fair, stage) {
   const info = fair || {};
   elements.fairCommit1.textContent = shortHash(info.commits?.player1);
@@ -623,10 +734,16 @@ function renderFairInfo(fair, stage) {
   elements.fairDeckHash.textContent = shortHash(info.deckHash);
   elements.verifyHandButton.disabled = state.busy || !info.verifyAvailable;
 
+  const commitsDone = Array.isArray(info.commitsBySeat) ? info.commitsBySeat.filter((item) => item.commit).length : 0;
+  const revealsDone = Array.isArray(info.revealedSecretsBySeat)
+    ? info.revealedSecretsBySeat.filter((item) => item.secret).length
+    : 0;
+  const totalSeats = Math.max(2, tablePlayers(state.offchainTable || state.chainTable || {}).length);
+
   if (stage === "waiting_for_commit") {
-    elements.fairVerifyStatus.textContent = "Commit your local secret. Opponent cannot see it yet.";
+    elements.fairVerifyStatus.textContent = `Commit your local secret. Commits: ${commitsDone}/${totalSeats}.`;
   } else if (stage === "waiting_for_reveal") {
-    elements.fairVerifyStatus.textContent = "Reveal your local secret within 60 seconds.";
+    elements.fairVerifyStatus.textContent = `Reveal your local secret within 60 seconds. Reveals: ${revealsDone}/${totalSeats}.`;
   } else if (info.verifyAvailable && !info.deck?.length) {
     elements.fairVerifyStatus.textContent = "Seed and deck hash are ready. Full deck is revealed after showdown.";
   } else if (info.deck?.length) {
@@ -648,16 +765,23 @@ function renderControls() {
   const stage = chain?.stage || "waiting";
   const isPlayer = chain?.exists && isCurrentPlayer(chain);
   const joined = isPlayer;
-  const offchainReady = Boolean(state.offchainTable?.player1 && state.offchainTable?.player2);
+  const offchainPlayers = tablePlayers(state.offchainTable || {});
+  const offchainHasMe = offchainPlayers.some((player) => sameAddress(player, state.account));
+  const chainPlayers = tablePlayers(chain || {});
+  const chainPlayerCount = Number(chain?.playerCount || chainPlayers.length || 0);
+  const expectedSeatCount = Math.max(2, offchainPlayers.length || chainPlayerCount);
+  const canStartConfirming = joined && stage === "waiting" && chainPlayerCount >= 2 && chainPlayerCount >= expectedSeatCount;
+  const offchainReady = Boolean(offchainHasMe);
   const needsJoin = state.tableId && offchainReady && (!chain?.exists || !joined);
-  const needsConfirm = joined && stage === "confirming" && !myConfirmed(chain);
+  const needsConfirm = canStartConfirming || (joined && stage === "confirming" && !myConfirmed(chain));
   const waitingForCommit = joined && stage === "waiting_for_commit";
   const waitingForReveal = joined && stage === "waiting_for_reveal";
   const needsStreetAnte = joined && (stage === "seed_ready" || ACTIVE_STAGES.has(stage)) && chain?.turn === ZERO_ADDRESS && !myStreetAntePaid(chain);
   const myTurn = joined && sameAddress(chain?.turn, state.account);
   const timedOut = Boolean(chain?.actionDeadline && Date.now() / 1000 > chain.actionDeadline);
   const canAct = ACTIVE_STAGES.has(stage) && myTurn && !timedOut && !needsStreetAnte;
-  const canCall = canAct && BigInt(chain?.currentBet || 0) > 0n;
+  const callOwed = currentCallOwed(chain);
+  const canCall = canAct && callOwed > 0n;
   const canSettle = stage === "showdown" && joined && Boolean(state.offchainTable?.winner);
   const canClaim = state.pendingClaim > 0n;
 
@@ -675,7 +799,7 @@ function renderControls() {
   elements.settleButton.hidden = !canSettle;
   elements.claimButton.hidden = !canClaim;
 
-  elements.confirmButton.textContent = needsJoin ? "Confirm Stake" : "Confirm";
+  elements.confirmButton.textContent = needsJoin ? "Confirm Stake" : stage === "waiting" ? "Start Hand" : "Confirm";
   elements.streetAnteButton.textContent = `Pay street ante ${formatEth(chain?.streetAnte || 0n)}`;
   elements.confirmButton.disabled = state.busy || !connected || !contractConfigured;
   elements.commitSeedButton.disabled = state.busy || !connected || !contractConfigured || hasMyCommit();
@@ -692,12 +816,13 @@ function renderControls() {
   if (!contractConfigured && state.tableId) {
     elements.tableStatus.textContent = "Contract not configured.";
   }
+  if (!state.tableId && !elements.lobbyScreen.hidden) renderLobbyTables();
 }
 
 function renderSimulationControls(connected) {
   const table = state.offchainTable || {};
   const stage = table.stage || "waiting";
-  const isPlayer = sameAddress(table.player1, state.account) || sameAddress(table.player2, state.account);
+  const isPlayer = tablePlayers(table).some((player) => sameAddress(player, state.account));
   const needsConfirm = connected && isPlayer && stage === "confirming";
   const myTurn = connected && isPlayer && sameAddress(table.turn, state.account);
   const canAct = ACTIVE_STAGES.has(stage) && myTurn;
@@ -822,7 +947,7 @@ async function callBet() {
     return;
   }
 
-  const value = BigInt(state.chainTable?.currentBet || 0);
+  const value = currentCallOwed(state.chainTable);
   if (value <= 0n) {
     showError("No open bet to call.");
     return;
@@ -970,7 +1095,10 @@ function startPolling() {
   clearInterval(state.pollId);
   state.pollId = window.setInterval(() => {
     if (state.tableId) refreshTable().catch((error) => console.info("refresh skipped:", error.message));
-    else refreshLobbyChat().catch((error) => console.info("lobby chat refresh skipped:", error.message));
+    else {
+      refreshLobbyChat().catch((error) => console.info("lobby chat refresh skipped:", error.message));
+      refreshLobbyTables().catch((error) => console.info("lobby tables refresh skipped:", error.message));
+    }
   }, 5000);
   clearInterval(state.timerId);
   state.timerId = window.setInterval(renderTimer, 1000);
@@ -1142,11 +1270,12 @@ function renderAdminTables(tables) {
 
     const meta = document.createElement("div");
     meta.className = "admin-table-meta";
+    const seats = tablePlayers(table).map((player, index) => `S${index + 1}: ${adminPlayerLabel(player, table)}`).join(" / ") || "No seats";
     meta.innerHTML = `
       <div><span>Stage</span><strong>${table.stage || "--"}</strong></div>
       <div><span>Status</span><strong>${table.status || "--"}</strong></div>
-      <div><span>Player 1</span><strong>${adminPlayerLabel(table.player1, table)}</strong></div>
-      <div><span>Player 2</span><strong>${adminPlayerLabel(table.player2, table)}</strong></div>
+      <div><span>Seats</span><strong>${tablePlayers(table).length}/${table.maxSeats || 6}</strong></div>
+      <div><span>Players</span><strong>${seats}</strong></div>
     `;
 
     const actions = document.createElement("div");
@@ -1201,25 +1330,32 @@ async function shareMiniApp() {
 async function verifyFairHand() {
   try {
     const fair = state.offchainTable?.fair || {};
-    const player1 = state.offchainTable?.player1 || state.chainTable?.player1;
-    const player2 = state.offchainTable?.player2 || state.chainTable?.player2;
+    const players = tablePlayers(state.offchainTable || state.chainTable || {});
     const handId = Number(fair.handId || currentHandId());
-    const secret1 = fair.revealedSecrets?.player1 || "";
-    const secret2 = fair.revealedSecrets?.player2 || "";
-    if (!secret1 || !secret2 || !handId) {
-      elements.fairVerifyStatus.textContent = "Both secrets are needed before verification.";
+    const revealsBySeat = Array.isArray(fair.revealedSecretsBySeat) ? fair.revealedSecretsBySeat : [];
+    const commitsBySeat = Array.isArray(fair.commitsBySeat) ? fair.commitsBySeat : [];
+    const secrets = players.map((player, index) => {
+      const row = revealsBySeat.find((item) => sameAddress(item.player, player));
+      return row?.secret || (index === 0 ? fair.revealedSecrets?.player1 : index === 1 ? fair.revealedSecrets?.player2 : "");
+    });
+    if (players.length < 2 || secrets.some((secret) => !secret) || !handId) {
+      elements.fairVerifyStatus.textContent = "All seated player secrets are needed before verification.";
       return;
     }
 
-    const commit1 = await buildSeedCommit(secret1, player1, state.tableId, handId);
-    const commit2 = await buildSeedCommit(secret2, player2, state.tableId, handId);
-    const commitsOk =
-      commit1.toLowerCase() === String(fair.commits?.player1 || "").toLowerCase() &&
-      commit2.toLowerCase() === String(fair.commits?.player2 || "").toLowerCase();
+    const commitChecks = await Promise.all(
+      players.map(async (player, index) => {
+        const expected = await buildSeedCommit(secrets[index], player, state.tableId, handId);
+        const row = commitsBySeat.find((item) => sameAddress(item.player, player));
+        const published = row?.commit || (index === 0 ? fair.commits?.player1 : index === 1 ? fair.commits?.player2 : "");
+        return expected.toLowerCase() === String(published || "").toLowerCase();
+      })
+    );
+    const commitsOk = commitChecks.every(Boolean);
 
     const deck = deterministicDeck(fair.seed || "");
     const hash = await buildDeckHash(deck);
-    const expectedSeed = await buildCommitRevealSeed(secret1, secret2, state.tableId, handId);
+    const expectedSeed = await buildCommitRevealSeed(secrets, state.tableId, handId);
     const seedOk = expectedSeed.toLowerCase() === String(fair.seed || "").toLowerCase();
     const deckOk = hash.toLowerCase() === String(fair.deckHash || "").toLowerCase();
     const publishedDeckOk = !fair.deck?.length || fair.deck.join("|") === deck.join("|");
@@ -1250,12 +1386,13 @@ async function buildSeedCommit(secret, playerAddress, tableId, handId) {
   );
 }
 
-async function buildCommitRevealSeed(secret1, secret2, tableId, handId) {
+async function buildCommitRevealSeed(secrets, tableId, handId) {
   const { keccak256, solidityPacked } = await getEthers();
+  const values = Array.isArray(secrets) ? secrets : [];
   return keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "uint256", "address"],
-      [secret1, secret2, tableId, BigInt(handId), BigInt(BASE_CHAIN.id), CONTRACT_ADDRESS]
+      ["bytes32", "uint256", "uint256", "address", ...values.map(() => "string")],
+      [tableId, BigInt(handId), BigInt(BASE_CHAIN.id), CONTRACT_ADDRESS || ZERO_ADDRESS, ...values]
     )
   );
 }
@@ -1319,17 +1456,21 @@ function tableStatusText(stage, chain, offchain) {
     return "Bot simulation mode. No bot transactions are sent.";
   }
   if (!isAddress(CONTRACT_ADDRESS)) return "Contract not configured.";
-  if (!chain?.exists && !(offchain?.player1 && offchain?.player2)) return "Waiting for second player.";
-  if (!chain?.exists) return "Both players are matched. Confirm your stake transaction.";
-  if (stage === "waiting") return "Waiting for second player.";
-  if (stage === "confirming") return "Both players must confirm within 60 seconds.";
+  const offchainPlayers = tablePlayers(offchain || {});
+  const chainPlayers = tablePlayers(chain || {});
+  if (!chain?.exists && offchainPlayers.length) return "Choose Confirm Stake to sit on-chain at this table.";
+  if (!chain?.exists) return "This table is not on-chain yet.";
+  if (stage === "waiting" && chainPlayers.length < 2) return "You are seated. Waiting for more players.";
+  if (stage === "waiting" && offchainPlayers.length > chainPlayers.length) return "Waiting for all chosen seats to confirm stake on-chain.";
+  if (stage === "waiting") return "At least two players are seated on-chain. Start the hand when ready.";
+  if (stage === "confirming") return "All seated players must confirm within 60 seconds.";
   if (stage === "waiting_for_commit") return hasMyCommit() ? "Waiting for opponent commit." : "Commit your local seed.";
   if (stage === "waiting_for_reveal") return hasMyReveal() ? "Waiting for opponent reveal." : "Reveal your seed within 60 seconds.";
   if (stage === "seed_ready") return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : "Pay street ante to start preflop.";
   if (ACTIVE_STAGES.has(stage) && chain?.turn === ZERO_ADDRESS) {
     return myStreetAntePaid(chain) ? "Waiting for opponent street ante." : `Pay street ante for ${stage}.`;
   }
-  if (ACTIVE_STAGES.has(stage)) return sameAddress(chain.turn, state.account) ? "Your turn." : "Waiting for opponent.";
+  if (ACTIVE_STAGES.has(stage)) return sameAddress(chain.turn, state.account) ? "Your turn." : "Waiting for next player.";
   if (stage === "showdown") return offchain?.winner ? `Suggested winner: ${labelAddress(offchain.winner)}.` : "Showdown result pending.";
   if (stage === "finished") return "Finished. Claim if you have a payout.";
   return "Ready.";
@@ -1355,6 +1496,8 @@ function turnLabel(address) {
 
 function myConfirmed(chain) {
   if (!chain || !state.account) return false;
+  const seat = mySeatIndex(chain);
+  if (seat >= 0 && Array.isArray(chain.confirmed)) return Boolean(chain.confirmed[seat]);
   if (sameAddress(chain.player1, state.account)) return chain.confirmed1;
   if (sameAddress(chain.player2, state.account)) return chain.confirmed2;
   return false;
@@ -1362,6 +1505,8 @@ function myConfirmed(chain) {
 
 function myStreetAntePaid(chain) {
   if (!chain || !state.account) return false;
+  const seat = mySeatIndex(chain);
+  if (seat >= 0 && Array.isArray(chain.streetAntePaid)) return Boolean(chain.streetAntePaid[seat]);
   if (sameAddress(chain.player1, state.account)) return chain.streetAntePaid1;
   if (sameAddress(chain.player2, state.account)) return chain.streetAntePaid2;
   return false;
@@ -1370,6 +1515,8 @@ function myStreetAntePaid(chain) {
 function hasMyCommit() {
   const fair = state.offchainTable?.fair;
   if (!fair || !state.account) return false;
+  const seatCommit = fair.commitsBySeat?.find((item) => sameAddress(item.player, state.account));
+  if (seatCommit) return Boolean(seatCommit.commit);
   if (sameAddress(state.offchainTable?.player1, state.account)) return Boolean(fair.commits?.player1);
   if (sameAddress(state.offchainTable?.player2, state.account)) return Boolean(fair.commits?.player2);
   return false;
@@ -1378,6 +1525,8 @@ function hasMyCommit() {
 function hasMyReveal() {
   const fair = state.offchainTable?.fair;
   if (!fair || !state.account) return false;
+  const seatReveal = fair.revealedSecretsBySeat?.find((item) => sameAddress(item.player, state.account));
+  if (seatReveal) return Boolean(seatReveal.secret);
   if (sameAddress(state.offchainTable?.player1, state.account)) return Boolean(fair.revealedSecrets?.player1);
   if (sameAddress(state.offchainTable?.player2, state.account)) return Boolean(fair.revealedSecrets?.player2);
   return false;
@@ -1388,7 +1537,30 @@ function currentHandId() {
 }
 
 function isCurrentPlayer(chain) {
-  return sameAddress(chain?.player1, state.account) || sameAddress(chain?.player2, state.account);
+  return tablePlayers(chain || {}).some((player) => sameAddress(player, state.account));
+}
+
+function mySeatIndex(table) {
+  return tablePlayers(table || {}).findIndex((player) => sameAddress(player, state.account));
+}
+
+function currentCallOwed(chain) {
+  if (!chain) return 0n;
+  const seat = mySeatIndex(chain);
+  const currentBet = BigInt(chain.currentBet || 0);
+  const myBet = seat >= 0 && Array.isArray(chain.stageBets) ? BigInt(chain.stageBets[seat] || 0) : 0n;
+  return currentBet > myBet ? currentBet - myBet : 0n;
+}
+
+function tablePlayers(table) {
+  const players = [
+    ...(Array.isArray(table?.players) ? table.players : []),
+    table?.player1,
+    table?.player2
+  ]
+    .filter((player) => isAddress(player) && player !== ZERO_ADDRESS)
+    .map((player) => player.toLowerCase());
+  return [...new Set(players)].slice(0, Number(table?.maxSeats || CONFIG.maxSeats || 6));
 }
 
 function sameAddress(a, b) {

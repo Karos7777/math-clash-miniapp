@@ -45,6 +45,10 @@ export async function onRequest(context) {
     return joinLobby(context);
   }
 
+  if (url.pathname === "/api/lobby/tables" && context.request.method === "GET") {
+    return getLobbyTables(context, url);
+  }
+
   if (url.pathname === "/api/lobby/status" && context.request.method === "GET") {
     return getLobbyStatus(context, url);
   }
@@ -130,21 +134,20 @@ async function adminFillWaitingWithBot(context) {
   }
 
   const table = await readPokerTable(context, waitingId);
-  if (!table || table.status !== "waiting" || !table.player1 || table.player2) {
+  if (!table || !tableHasOpenSeat(table)) {
     return adminCreateBotWaiting(context);
   }
 
   const bot = createBot();
-  table.player2 = bot.address;
-  table.status = "confirming";
-  table.stage = "confirming";
+  addPlayerToTable(table, bot.address);
+  table.status = tablePlayers(table).length >= 2 ? "confirming" : "waiting";
+  table.stage = table.status;
   table.updatedAt = new Date().toISOString();
   markBotTable(table, bot);
   dealTableCards(table);
-  lobby.waitingTableId = "";
+  lobby.waitingTableId = tableHasOpenSeat(table) ? table.id : "";
   trackTable(lobby, table.id);
-  trackPlayerTable(lobby, table.player1, table.id);
-  trackPlayerTable(lobby, table.player2, table.id);
+  for (const player of tablePlayers(table)) trackPlayerTable(lobby, player, table.id);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ ok: true, bot, table: publicTable(table, "") });
@@ -177,52 +180,58 @@ async function joinLobby(context) {
 
   const lobby = await readLobby(context);
   let table = null;
-  const existingTable = await findPlayerTable(context, lobby, walletAddress, normalizeTableId(body.tableId));
+  const requestedTableId = normalizeTableId(body.tableId);
+  const existingTable = await findPlayerTable(context, lobby, walletAddress, requestedTableId);
   if (existingTable) {
     return jsonResponse({ table: publicTable(existingTable, walletAddress), restored: true });
   }
-  const waitingId = lobby.waitingTableId;
 
-  if (waitingId) {
-    const waitingTable = await readPokerTable(context, waitingId);
-    if (
-      waitingTable &&
-      waitingTable.status === "waiting" &&
-      normalizeAddress(waitingTable.player1) !== walletAddress
-    ) {
-      table = waitingTable;
-      table.player2 = walletAddress;
-      table.status = "confirming";
-      table.stage = "confirming";
-      table.updatedAt = new Date().toISOString();
-      if (table.bots && Object.keys(table.bots).length) {
-        table.deck = table.deck || shuffleDeck(`${table.id}:${table.createdAt}`);
-        dealTableCards(table);
-      } else {
-        prepareFairHand(table, 1);
-      }
-      lobby.waitingTableId = "";
-      trackPlayerTable(lobby, table.player1, table.id);
-      trackPlayerTable(lobby, table.player2, table.id);
-    }
+  if (requestedTableId && !body.create) {
+    const requestedTable = await readPokerTable(context, requestedTableId);
+    if (!requestedTable) return jsonResponse({ error: "Table not found" }, 404);
+    if (!tableHasOpenSeat(requestedTable)) return jsonResponse({ error: "Table is not open for new seats." }, 409);
+    addPlayerToTable(requestedTable, walletAddress);
+    table = requestedTable;
+  }
+
+  if (!table && !body.create) {
+    table = await firstOpenLobbyTable(context, lobby, walletAddress);
+    if (table) addPlayerToTable(table, walletAddress);
   }
 
   if (!table) {
     table = createPokerTable(walletAddress);
-    lobby.waitingTableId = table.id;
     trackTable(lobby, table.id);
-    trackPlayerTable(lobby, walletAddress, table.id);
   }
 
   if (table.bots && Object.keys(table.bots).length) {
     table.simulation = true;
+    if (tablePlayers(table).length >= 2 && table.stage === "waiting") {
+      table.status = "confirming";
+      table.stage = "confirming";
+      dealTableCards(table);
+    }
   }
   trackTable(lobby, table.id);
-  trackPlayerTable(lobby, table.player1, table.id);
-  trackPlayerTable(lobby, table.player2, table.id);
+  for (const player of tablePlayers(table)) trackPlayerTable(lobby, player, table.id);
+  lobby.waitingTableId = tableHasOpenSeat(table) ? table.id : await firstOpenLobbyTableId(context, lobby);
   await writePokerTable(context, table);
   await writeLobby(context, lobby);
   return jsonResponse({ table: publicTable(table, walletAddress) });
+}
+
+async function getLobbyTables(context, url) {
+  const lobby = await readLobby(context);
+  const viewer = normalizeAddress(url.searchParams.get("walletAddress"));
+  const tables = [];
+  for (const tableId of [...(lobby.tableIds || [])].reverse()) {
+    const table = await readPokerTable(context, tableId);
+    if (!table) continue;
+    normalizePokerTable(table);
+    if (table.status === "finished" || normalizeStage(table.stage) === "finished") continue;
+    tables.push(publicTable(table, viewer));
+  }
+  return jsonResponse({ ok: true, tables: tables.slice(0, 50), waitingTableId: lobby.waitingTableId || "" });
 }
 
 async function getLobbyStatus(context, url) {
@@ -278,6 +287,15 @@ async function syncTableState(context, rawTableId) {
   const player2 = normalizeAddress(body.player2);
   if (player1) table.player1 = player1;
   if (player2) table.player2 = player2;
+  if (Array.isArray(body.players)) {
+    const players = body.players.map(normalizeAddress).filter(Boolean);
+    if (players.length) {
+      table.players = [...new Set(players)].slice(0, 6);
+      normalizePokerTable(table);
+    }
+  } else {
+    normalizePokerTable(table);
+  }
   applyChainHandSeed(table, body.handSeed);
 
   const winner = normalizeAddress(body.winner);
@@ -339,7 +357,7 @@ async function handleFairAction(context, rawTableId, action) {
 
   table.fair.reveals[walletAddress] = secret;
 
-  if (table.fair.reveals[normalizeAddress(table.player1)] && table.fair.reveals[normalizeAddress(table.player2)]) {
+  if (tablePlayers(table).every((player) => table.fair.reveals[player])) {
     finalizeFairDeck(table, context);
   }
 
@@ -398,7 +416,7 @@ function clientConfig(context) {
     defaultStakeEth: context.env.DEFAULT_STAKE_ETH || context.env.LOW_LIMIT_BUY_IN_ETH || "0.0001",
     defaultBetEth: context.env.DEFAULT_BET_ETH || context.env.LOW_LIMIT_ANTE_ETH || "0.00001",
     developerFeeBps: 200,
-    maxSeats: 2,
+    maxSeats: 6,
     chain: {
       id: chainId,
       hex: `0x${chainId.toString(16)}`,
@@ -458,13 +476,13 @@ function buildMiniAppManifest(context) {
     splashImageUrl: `${appUrl(context)}/assets/splash.png`,
     splashBackgroundColor: "#111318",
     heroImageUrl: `${appUrl(context)}/assets/og.png`,
-    subtitle: "1v1 on-chain poker table",
-    description: "Find a low-limit table, send real ETH into the pot, call or fold, and settle each hand on-chain.",
+    subtitle: "6-seat on-chain poker table",
+    description: "Choose a low-limit table, send real ETH into the pot, call or fold, and settle each hand on-chain.",
     tagline: "Find. Bet. Settle.",
     primaryCategory: "games",
     tags: ["poker", "bluff", "base", "pvp"],
     ogTitle: appName(context),
-    ogDescription: "A two-player poker table where every bet and call sends ETH into the hand pot.",
+    ogDescription: "A six-seat poker table where every bet and call sends ETH into the hand pot.",
     ogImageUrl: `${appUrl(context)}/assets/og.png`,
     requiredChains: [`eip155:${chainId}`],
     requiredCapabilities: [
@@ -570,11 +588,14 @@ async function writePokerTable(context, table) {
 function createPokerTable(walletAddress) {
   const now = new Date().toISOString();
   const id = randomTableId();
+  const player = normalizeAddress(walletAddress);
   return {
     id,
     status: "waiting",
     stage: "waiting",
-    player1: walletAddress,
+    maxSeats: 6,
+    players: player ? [player] : [],
+    player1: player,
     player2: "",
     stake: "0.0001",
     pot: "0",
@@ -594,19 +615,22 @@ function createPokerTable(walletAddress) {
 }
 
 function markBotTable(table, bot) {
+  normalizePokerTable(table);
   table.simulation = true;
   table.bots = { ...(table.bots || {}), [normalizeAddress(bot.address)]: true };
   table.playerLabels = { ...(table.playerLabels || {}), [normalizeAddress(bot.address)]: bot.name };
 }
 
 function dealTableCards(table) {
-  if (!table.player1 || !table.player2 || table.communityCards?.length) return;
-  const deck = Array.isArray(table.deck) && table.deck.length >= 9 ? table.deck : shuffleDeck(table.id);
-  table.playerCards = {
-    [normalizeAddress(table.player1)]: [deck[0], deck[2]],
-    [normalizeAddress(table.player2)]: [deck[1], deck[3]]
-  };
-  table.communityCards = deck.slice(4, 9);
+  const players = tablePlayers(table);
+  if (players.length < 2 || table.communityCards?.length) return;
+  const neededCards = players.length * 2 + 5;
+  const deck = Array.isArray(table.deck) && table.deck.length >= neededCards ? table.deck : shuffleDeck(table.id);
+  table.playerCards = {};
+  for (let i = 0; i < players.length; i += 1) {
+    table.playerCards[players[i]] = [deck[i], deck[i + players.length]];
+  }
+  table.communityCards = deck.slice(players.length * 2, players.length * 2 + 5);
 }
 
 function prepareFairHand(table, handId) {
@@ -636,15 +660,14 @@ function ensureFairHand(table, handId) {
 }
 
 function finalizeFairDeck(table, context) {
-  const player1 = normalizeAddress(table.player1);
-  const player2 = normalizeAddress(table.player2);
-  const secret1 = table.fair.reveals[player1];
-  const secret2 = table.fair.reveals[player2];
+  const players = tablePlayers(table);
+  const secrets = players.map((player) => table.fair.reveals[player]);
+  if (players.length < 2 || secrets.some((secret) => !secret)) return;
   const contract = normalizeAddress(gameContractAddress(context)) || "0x0000000000000000000000000000000000000000";
   const seed = keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "uint256", "address"],
-      [secret1, secret2, table.id, BigInt(table.fair.handId), BigInt(baseChainId(context)), contract]
+      ["bytes32", "uint256", "uint256", "address", ...secrets.map(() => "string")],
+      [table.id, BigInt(table.fair.handId), BigInt(baseChainId(context)), contract, ...secrets]
     )
   );
   const deck = shuffleDeck(seed);
@@ -652,39 +675,31 @@ function finalizeFairDeck(table, context) {
   table.fair.deckHash = deckHash(deck);
   table.fair.finalDeck = deck;
   table.deck = deck;
-  table.playerCards = {
-    [player1]: [deck[0], deck[2]],
-    [player2]: [deck[1], deck[3]]
-  };
-  table.communityCards = deck.slice(4, 9);
+  dealDeckToPlayers(table, deck, players);
 }
 
 function finalizeFairDeckFromSeed(table, seed) {
-  const player1 = normalizeAddress(table.player1);
-  const player2 = normalizeAddress(table.player2);
+  const players = tablePlayers(table);
   const deck = shuffleDeck(seed);
   table.fair.seed = seed;
   table.fair.deckHash = deckHash(deck);
   table.fair.finalDeck = deck;
   table.deck = deck;
-  table.playerCards = {
-    [player1]: [deck[0], deck[2]],
-    [player2]: [deck[1], deck[3]]
-  };
-  table.communityCards = deck.slice(4, 9);
+  dealDeckToPlayers(table, deck, players);
 }
 
 function applyChainHandSeed(table, handSeed) {
   if (!handSeed || typeof handSeed !== "object" || !table.handId) return;
   ensureFairHand(table, Number(table.handId));
-  const player1 = normalizeAddress(table.player1);
-  const player2 = normalizeAddress(table.player2);
-  const commit1 = normalizeBytes32(handSeed.commit1);
-  const commit2 = normalizeBytes32(handSeed.commit2);
-  if (commit1 && commit1 !== zeroBytes32()) table.fair.commits[player1] = commit1;
-  if (commit2 && commit2 !== zeroBytes32()) table.fair.commits[player2] = commit2;
-  if (handSeed.revealed1 && handSeed.secret1) table.fair.reveals[player1] = String(handSeed.secret1);
-  if (handSeed.revealed2 && handSeed.secret2) table.fair.reveals[player2] = String(handSeed.secret2);
+  const players = tablePlayers(table);
+  const commits = Array.isArray(handSeed.commits) ? handSeed.commits : [handSeed.commit1, handSeed.commit2];
+  const secrets = Array.isArray(handSeed.secrets) ? handSeed.secrets : [handSeed.secret1, handSeed.secret2];
+  const revealed = Array.isArray(handSeed.revealed) ? handSeed.revealed : [handSeed.revealed1, handSeed.revealed2];
+  for (let i = 0; i < players.length; i += 1) {
+    const commit = normalizeBytes32(commits[i]);
+    if (commit && commit !== zeroBytes32()) table.fair.commits[players[i]] = commit;
+    if (revealed[i] && secrets[i]) table.fair.reveals[players[i]] = String(secrets[i]);
+  }
   const seed = normalizeBytes32(handSeed.seed);
   if (handSeed.ready && seed && seed !== zeroBytes32()) {
     finalizeFairDeckFromSeed(table, seed);
@@ -692,15 +707,21 @@ function applyChainHandSeed(table, handSeed) {
 }
 
 function publicTable(table, viewer) {
+  normalizePokerTable(table);
   const stage = normalizeStage(table.stage) || "waiting";
   const visibleCommunity = communityForStage(table.communityCards || [], stage);
   const playerCards = viewer && table.playerCards ? table.playerCards[viewer] || [] : [];
+  const players = tablePlayers(table);
+  const maxSeats = Number(table.maxSeats || 6);
   return {
     id: table.id,
     status: table.status,
     stage,
     player1: table.player1 || "",
     player2: table.player2 || "",
+    players,
+    maxSeats,
+    openSeats: Math.max(0, maxSeats - players.length),
     stake: table.stake || "0.0001",
     pot: table.pot || "0",
     turn: table.turn || "",
@@ -719,6 +740,7 @@ function publicTable(table, viewer) {
 }
 
 function publicFairInfo(table, stage) {
+  const players = tablePlayers(table);
   const fair = table.fair;
   if (!fair) {
     return {
@@ -734,17 +756,29 @@ function publicFairInfo(table, stage) {
   }
 
   const showDeck = ["showdown", "finished"].includes(stage);
+  const commitsBySeat = players.map((player, index) => ({
+    seat: index + 1,
+    player,
+    commit: fair.commits?.[player] || ""
+  }));
+  const revealsBySeat = players.map((player, index) => ({
+    seat: index + 1,
+    player,
+    secret: fair.reveals?.[player] || ""
+  }));
   return {
     version: fair.version || "commit-reveal-v1",
     handId: Number(fair.handId || table.handId || 0),
     commits: {
-      player1: fair.commits?.[normalizeAddress(table.player1)] || "",
-      player2: fair.commits?.[normalizeAddress(table.player2)] || ""
+      player1: fair.commits?.[players[0]] || "",
+      player2: fair.commits?.[players[1]] || ""
     },
+    commitsBySeat,
     revealedSecrets: {
-      player1: fair.reveals?.[normalizeAddress(table.player1)] || "",
-      player2: fair.reveals?.[normalizeAddress(table.player2)] || ""
+      player1: fair.reveals?.[players[0]] || "",
+      player2: fair.reveals?.[players[1]] || ""
     },
+    revealedSecretsBySeat: revealsBySeat,
     chainData: fair.chainData || "",
     seed: fair.seed || "",
     deckHash: fair.deckHash || "",
@@ -802,13 +836,12 @@ function addEthStrings(current, amount) {
 }
 
 function botOpponent(table, walletAddress) {
-  const p1 = normalizeAddress(table.player1);
-  const p2 = normalizeAddress(table.player2);
-  return sameAddress(walletAddress, p1) ? p2 : p1;
+  const players = tablePlayers(table);
+  return players.find((player) => !sameAddress(player, walletAddress)) || "";
 }
 
 function isTablePlayer(table, walletAddress) {
-  return sameAddress(table.player1, walletAddress) || sameAddress(table.player2, walletAddress);
+  return tablePlayers(table).some((player) => sameAddress(player, walletAddress));
 }
 
 function isBot(table, walletAddress) {
@@ -834,6 +867,82 @@ function randomBotAddress() {
   crypto.getRandomValues(bytes);
   bytes[0] = 0xb0;
   return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function normalizePokerTable(table) {
+  if (!table || typeof table !== "object") return table;
+  const players = tablePlayers(table);
+  table.players = players;
+  table.maxSeats = Number(table.maxSeats || 6);
+  if (!Number.isFinite(table.maxSeats) || table.maxSeats < 2) table.maxSeats = 6;
+  table.maxSeats = Math.min(6, Math.max(2, Math.trunc(table.maxSeats)));
+  table.player1 = players[0] || "";
+  table.player2 = players[1] || "";
+  table.status = table.status || (players.length >= 2 ? "waiting" : "waiting");
+  table.stage = normalizeStage(table.stage) || "waiting";
+  table.bots = table.bots && typeof table.bots === "object" ? table.bots : {};
+  table.playerLabels = table.playerLabels && typeof table.playerLabels === "object" ? table.playerLabels : {};
+  table.playerCards = table.playerCards && typeof table.playerCards === "object" ? table.playerCards : {};
+  table.communityCards = Array.isArray(table.communityCards) ? table.communityCards : [];
+  return table;
+}
+
+function tablePlayers(table) {
+  const raw = [
+    ...(Array.isArray(table?.players) ? table.players : []),
+    table?.player1,
+    table?.player2
+  ];
+  const players = [];
+  const seen = new Set();
+  for (const value of raw) {
+    const player = normalizeAddress(value);
+    if (!player || seen.has(player)) continue;
+    seen.add(player);
+    players.push(player);
+  }
+  return players.slice(0, 6);
+}
+
+function tableHasOpenSeat(table) {
+  normalizePokerTable(table);
+  return table.status !== "finished" && normalizeStage(table.stage) === "waiting" && table.players.length < table.maxSeats;
+}
+
+function addPlayerToTable(table, walletAddress) {
+  normalizePokerTable(table);
+  const player = normalizeAddress(walletAddress);
+  if (!player) throw new Error("walletAddress required");
+  if (table.players.some((seatPlayer) => sameAddress(seatPlayer, player))) return table;
+  if (!tableHasOpenSeat(table)) throw new Error("Table is not open for new seats.");
+  table.players.push(player);
+  normalizePokerTable(table);
+  table.updatedAt = new Date().toISOString();
+  return table;
+}
+
+function dealDeckToPlayers(table, deck, players = tablePlayers(table)) {
+  table.playerCards = {};
+  for (let i = 0; i < players.length; i += 1) {
+    table.playerCards[players[i]] = [deck[i], deck[i + players.length]];
+  }
+  table.communityCards = deck.slice(players.length * 2, players.length * 2 + 5);
+}
+
+async function firstOpenLobbyTable(context, lobby, walletAddress = "") {
+  const player = normalizeAddress(walletAddress);
+  for (const tableId of [...(lobby.tableIds || [])].reverse()) {
+    const table = await readPokerTable(context, tableId);
+    if (!table || !tableHasOpenSeat(table)) continue;
+    if (player && isTablePlayer(table, player)) continue;
+    return table;
+  }
+  return null;
+}
+
+async function firstOpenLobbyTableId(context, lobby) {
+  const table = await firstOpenLobbyTable(context, lobby, "");
+  return table?.id || "";
 }
 
 function normalizeLobby(lobby) {
@@ -888,6 +997,7 @@ async function findPlayerTable(context, lobby, walletAddress, preferredTableId =
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const table = await readPokerTable(context, id);
+    if (table) normalizePokerTable(table);
     if (table && isTablePlayer(table, player) && table.status !== "finished" && normalizeStage(table.stage) !== "finished") {
       trackPlayerTable(lobby, player, table.id);
       return table;
@@ -897,12 +1007,16 @@ async function findPlayerTable(context, lobby, walletAddress, preferredTableId =
 }
 
 function adminTableSummary(table) {
+  normalizePokerTable(table);
   return {
     id: table.id,
     status: table.status,
     stage: table.stage,
     player1: table.player1 || "",
     player2: table.player2 || "",
+    players: table.players,
+    maxSeats: table.maxSeats,
+    openSeats: Math.max(0, table.maxSeats - table.players.length),
     playerLabels: table.playerLabels || {},
     simulation: Boolean(table.simulation),
     handId: Number(table.handId || table.fair?.handId || 0),
@@ -936,12 +1050,18 @@ function communityForStage(cards, stage) {
 }
 
 function pickWinner(table) {
-  const p1 = normalizeAddress(table.player1);
-  const p2 = normalizeAddress(table.player2);
+  const players = tablePlayers(table);
   const community = table.communityCards || [];
-  const score1 = handScore([...(table.playerCards?.[p1] || []), ...community]);
-  const score2 = handScore([...(table.playerCards?.[p2] || []), ...community]);
-  return score1 >= score2 ? p1 : p2;
+  let winner = players[0] || "";
+  let bestScore = -1;
+  for (const player of players) {
+    const score = handScore([...(table.playerCards?.[player] || []), ...community]);
+    if (score > bestScore) {
+      winner = player;
+      bestScore = score;
+    }
+  }
+  return winner;
 }
 
 function handScore(cards) {

@@ -1,11 +1,11 @@
 # Poker Clash Farcaster Mini App
 
-Poker Clash is a Base Sepolia testnet MVP for a two-player poker table inside one Farcaster Mini App.
+Poker Clash is a Base Sepolia testnet MVP for a six-seat poker table inside one Farcaster Mini App.
 
 The app has two screens:
 
-- `/` lobby: connect wallet and press Start Game.
-- `/#/table/:tableId` table: player1/player2, pot, stake, stage, turn, 60 second timer, actions, cards, and table chat.
+- `/` lobby: connect wallet, create a table, or choose a visible open table.
+- `/#/table/:tableId` table: up to six seats, pot, stake, stage, turn, 60 second timer, actions, cards, and table chat.
 
 Money movement is handled by the Solidity contract. Lobby matching, table UI state, commit-reveal dealing receipts, prototype cards, and chat are stored in Cloudflare KV on Pages, with local JSON storage for development.
 
@@ -18,11 +18,11 @@ The contract is [contracts/Escrow.sol](contracts/Escrow.sol). The name stays `Es
 Main flow:
 
 - `joinTable(bytes32 tableId)` payable: player sends the ETH stake for a table.
-- `confirm(bytes32 tableId)`: after both players joined, each player confirms by transaction within 60 seconds.
+- `confirm(bytes32 tableId)`: after at least two players joined, seated players confirm by transaction within 60 seconds.
 - `commitSeed(bytes32 tableId,uint256 handId,bytes32 commit)`: commit a hidden local seed before cards are dealt.
-- `revealSeed(bytes32 tableId,uint256 handId,string secret)`: reveal the local seed within 60 seconds. After both players reveal, the contract creates the final seed.
+- `revealSeed(bytes32 tableId,uint256 handId,string secret)`: reveal the local seed within 60 seconds. After all active seated players reveal, the contract creates the final seed.
 - `timeoutReveal(bytes32 tableId,uint256 handId)`: punish/refund a stalled commit/reveal phase after timeout.
-- `payStreetAnte(bytes32 tableId)` payable: each player sends the small street ante before preflop/flop/turn/river betting opens.
+- `payStreetAnte(bytes32 tableId)` payable: each active player sends the small street ante before preflop/flop/turn/river betting opens.
 - `check(bytes32 tableId)`: pass action if there is no open bet.
 - `bet(bytes32 tableId)` payable: send an ETH bet into the pot.
 - `call(bytes32 tableId)` payable: match the open bet.
@@ -47,13 +47,13 @@ Payout notes:
 
 ## Commit-Reveal Fairness
 
-Before cards are dealt, both players generate a local secret in their browser.
+Before cards are dealt, every seated active player generates a local secret in their browser.
 
 Flow:
 
 - Commit: the browser sends `keccak256(secret + playerAddress + tableId + handId)` to the contract.
-- Reveal: after both commits are present, each player reveals the secret within 60 seconds.
-- Seed: after two reveals, the contract combines `secret1`, `secret2`, `tableId`, `handId`, chain id, and the contract address into one final seed.
+- Reveal: after all commits are present, each player reveals the secret within 60 seconds.
+- Seed: after all reveals, the contract combines `tableId`, `handId`, chain id, contract address, and every revealed secret in seat order into one final seed.
 - Deck: Cloudflare deterministically shuffles a 52-card deck from that seed, stores the deck hash, and only returns the viewer's own private cards before showdown.
 - Verify: after showdown/finish, the UI can recompute commits, seed, deck, and deck hash from the revealed secrets.
 

@@ -41,20 +41,24 @@ function main() {
   const tableId = `0x${"12".repeat(32)}`;
   const player1 = "0x1111111111111111111111111111111111111111";
   const player2 = "0x2222222222222222222222222222222222222222";
+  const player3 = "0x4444444444444444444444444444444444444444";
   const handId = 1n;
   const secret1 = "local-secret-player-1";
   const secret2 = "local-secret-player-2";
+  const secret3 = "local-secret-player-3";
   const chainId = 84532n;
   const contract = "0x3333333333333333333333333333333333333333";
 
   const commit1 = keccak256(solidityPacked(["string", "address", "bytes32", "uint256"], [secret1, player1, tableId, handId]));
   const commit2 = keccak256(solidityPacked(["string", "address", "bytes32", "uint256"], [secret2, player2, tableId, handId]));
+  const commit3 = keccak256(solidityPacked(["string", "address", "bytes32", "uint256"], [secret3, player3, tableId, handId]));
   assert(commit1 !== commit2, "different players/secrets produce different commits");
+  assert(commit2 !== commit3, "third player commit is unique");
 
   const seed = keccak256(
     solidityPacked(
-      ["string", "string", "bytes32", "uint256", "uint256", "address"],
-      [secret1, secret2, tableId, handId, chainId, contract]
+      ["bytes32", "uint256", "uint256", "address", "string", "string", "string"],
+      [tableId, handId, chainId, contract, secret1, secret2, secret3]
     )
   );
   const deckA = shuffleDeck(seed);
