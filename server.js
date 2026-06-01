@@ -24,6 +24,7 @@ const BASE_RPC_URL = process.env.BASE_RPC_URL || process.env.BASE_SEPOLIA_RPC_UR
 const GAME_CONTRACT_ADDRESS = process.env.GAME_CONTRACT_ADDRESS || process.env.ESCROW_CONTRACT_ADDRESS || "";
 const DEFAULT_STAKE_ETH = process.env.DEFAULT_STAKE_ETH || process.env.LOW_LIMIT_BUY_IN_ETH || "0.0001";
 const DEFAULT_BET_ETH = process.env.DEFAULT_BET_ETH || process.env.LOW_LIMIT_ANTE_ETH || "0.00001";
+const WAITING_TABLE_TTL_MS = 10 * 60 * 1000;
 const FARCASTER_HOSTED_MANIFEST_ID = process.env.FARCASTER_HOSTED_MANIFEST_ID || "";
 const FARCASTER_ACCOUNT_ASSOCIATION_HEADER =
   process.env.FARCASTER_ACCOUNT_ASSOCIATION_HEADER || "";
@@ -183,6 +184,9 @@ function serveAdminState(req, res) {
 
   const state = storage.loadState();
   const lobby = normalizeLobby(state.pokerLobby);
+  cleanupExpiredLobbyTables(state, lobby);
+  state.pokerLobby = lobby;
+  storage.saveState(state);
   const tables = lobby.tableIds
     .slice(-25)
     .map((tableId) => state.pokerTables?.[tableId])
@@ -283,6 +287,7 @@ function handleLobbyJoin(req, res) {
       const state = storage.loadState();
       state.pokerLobby = normalizeLobby(state.pokerLobby);
       state.pokerTables = state.pokerTables || {};
+      cleanupExpiredLobbyTables(state, state.pokerLobby);
 
       let table = null;
       const requestedTableId = normalizeTableId(body.tableId);
@@ -342,6 +347,7 @@ function serveLobbyTables(url, res) {
   const state = storage.loadState();
   state.pokerLobby = normalizeLobby(state.pokerLobby);
   state.pokerTables = state.pokerTables || {};
+  cleanupExpiredLobbyTables(state, state.pokerLobby);
   const viewer = normalizeAddress(url.searchParams.get("walletAddress"));
   const tables = [];
   for (const tableId of [...(state.pokerLobby.tableIds || [])].reverse()) {
@@ -365,6 +371,7 @@ function serveLobbyStatus(url, res) {
   const state = storage.loadState();
   state.pokerLobby = normalizeLobby(state.pokerLobby);
   state.pokerTables = state.pokerTables || {};
+  cleanupExpiredLobbyTables(state, state.pokerLobby);
   const table = findPlayerTable(state, state.pokerLobby, walletAddress, normalizeTableId(url.searchParams.get("tableId")));
   storage.saveState(state);
   sendJson(res, 200, {
@@ -412,6 +419,9 @@ function handleTableSync(req, rawTableId, res) {
         table.stage = stage;
         table.status =
           stage === "finished" ? "finished" : stage === "waiting" ? "waiting" : stage === "confirming" ? "confirming" : "playing";
+      }
+      if (body.chainExists || stage) {
+        table.onChain = true;
       }
 
       const handId = Number(body.handId || 0);
@@ -644,6 +654,7 @@ function createPokerTable(walletAddress) {
     stake: DEFAULT_STAKE_ETH,
     pot: "0",
     turn: "",
+    onChain: false,
     simulation: false,
     bots: {},
     playerLabels: {},
@@ -769,6 +780,7 @@ function publicTable(table, viewer) {
     stake: table.stake || DEFAULT_STAKE_ETH,
     pot: table.pot || "0",
     turn: table.turn || "",
+    onChain: Boolean(table.onChain),
     simulation: Boolean(table.simulation),
     bots: table.bots || {},
     playerLabels: table.playerLabels || {},
@@ -985,6 +997,52 @@ function firstOpenLobbyTable(state, lobby, walletAddress = "") {
 
 function firstOpenLobbyTableId(state, lobby) {
   return firstOpenLobbyTable(state, lobby, "")?.id || "";
+}
+
+function cleanupExpiredLobbyTables(state, lobby) {
+  state.pokerTables = state.pokerTables || {};
+  const keepIds = [];
+  const removed = new Set();
+  for (const tableId of lobby.tableIds || []) {
+    const id = normalizeTableId(tableId);
+    if (!id) continue;
+    const table = state.pokerTables[id];
+    if (!table) {
+      removed.add(id);
+      continue;
+    }
+    normalizePokerTable(table);
+    if (isExpiredWaitingTable(table)) {
+      delete state.pokerTables[id];
+      removed.add(id);
+      continue;
+    }
+    keepIds.push(id);
+  }
+  lobby.tableIds = [...new Set(keepIds)].slice(-100);
+  if (removed.has(normalizeTableId(lobby.waitingTableId))) {
+    lobby.waitingTableId = "";
+  }
+  if (!lobby.waitingTableId) {
+    lobby.waitingTableId = firstOpenLobbyTableId(state, lobby);
+  }
+  const playerTables = {};
+  for (const [player, tableId] of Object.entries(lobby.playerTables || {})) {
+    const id = normalizeTableId(tableId);
+    if (!id || removed.has(id) || !state.pokerTables[id]) continue;
+    playerTables[player] = id;
+  }
+  lobby.playerTables = playerTables;
+}
+
+function isExpiredWaitingTable(table) {
+  normalizePokerTable(table);
+  if (table.onChain) return false;
+  if (normalizeStage(table.stage) !== "waiting") return false;
+  if (table.players.length >= 2) return false;
+  const timestamp = Date.parse(table.updatedAt || table.createdAt || "");
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp > WAITING_TABLE_TTL_MS;
 }
 
 function normalizeLobby(lobby) {

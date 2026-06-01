@@ -1,6 +1,7 @@
 import { keccak256, solidityPacked, toUtf8Bytes } from "ethers";
 
 const DEFAULT_APP_URL = "https://your-domain.example";
+const WAITING_TABLE_TTL_MS = 10 * 60 * 1000;
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
@@ -88,6 +89,7 @@ async function getAdminState(context) {
   if (!auth.ok) return auth.response;
 
   const lobby = await readLobby(context);
+  await cleanupExpiredLobbyTables(context, lobby);
   const tableIds = lobby.tableIds || [];
   const tables = [];
   for (const tableId of tableIds.slice(-25)) {
@@ -179,6 +181,7 @@ async function joinLobby(context) {
   }
 
   const lobby = await readLobby(context);
+  await cleanupExpiredLobbyTables(context, lobby);
   let table = null;
   const requestedTableId = normalizeTableId(body.tableId);
   const existingTable = await findPlayerTable(context, lobby, walletAddress, requestedTableId);
@@ -222,6 +225,7 @@ async function joinLobby(context) {
 
 async function getLobbyTables(context, url) {
   const lobby = await readLobby(context);
+  await cleanupExpiredLobbyTables(context, lobby);
   const viewer = normalizeAddress(url.searchParams.get("walletAddress"));
   const tables = [];
   for (const tableId of [...(lobby.tableIds || [])].reverse()) {
@@ -239,6 +243,7 @@ async function getLobbyStatus(context, url) {
   if (!walletAddress) return jsonResponse({ error: "walletAddress required" }, 400);
 
   const lobby = await readLobby(context);
+  await cleanupExpiredLobbyTables(context, lobby);
   const table = await findPlayerTable(context, lobby, walletAddress, normalizeTableId(url.searchParams.get("tableId")));
   return jsonResponse({
     ok: true,
@@ -274,6 +279,9 @@ async function syncTableState(context, rawTableId) {
     table.stage = stage;
     table.status =
       stage === "finished" ? "finished" : stage === "waiting" ? "waiting" : stage === "confirming" ? "confirming" : "playing";
+  }
+  if (body.chainExists || stage) {
+    table.onChain = true;
   }
 
   const handId = Number(body.handId || 0);
@@ -600,6 +608,7 @@ function createPokerTable(walletAddress) {
     stake: "0.0001",
     pot: "0",
     turn: "",
+    onChain: false,
     simulation: false,
     bots: {},
     playerLabels: {},
@@ -725,6 +734,7 @@ function publicTable(table, viewer) {
     stake: table.stake || "0.0001",
     pot: table.pot || "0",
     turn: table.turn || "",
+    onChain: Boolean(table.onChain),
     simulation: Boolean(table.simulation),
     bots: table.bots || {},
     playerLabels: table.playerLabels || {},
@@ -943,6 +953,54 @@ async function firstOpenLobbyTable(context, lobby, walletAddress = "") {
 async function firstOpenLobbyTableId(context, lobby) {
   const table = await firstOpenLobbyTable(context, lobby, "");
   return table?.id || "";
+}
+
+async function cleanupExpiredLobbyTables(context, lobby) {
+  const keepIds = [];
+  const removed = new Set();
+  const kv = chatKv(context);
+  for (const tableId of lobby.tableIds || []) {
+    const id = normalizeTableId(tableId);
+    if (!id) continue;
+    const table = await readPokerTable(context, id);
+    if (!table) {
+      removed.add(id);
+      continue;
+    }
+    normalizePokerTable(table);
+    if (isExpiredWaitingTable(table)) {
+      if (kv) await kv.delete(tableKey(id));
+      removed.add(id);
+      continue;
+    }
+    keepIds.push(id);
+  }
+  lobby.tableIds = [...new Set(keepIds)].slice(-100);
+  if (removed.has(normalizeTableId(lobby.waitingTableId))) {
+    lobby.waitingTableId = "";
+  }
+  if (!lobby.waitingTableId) {
+    lobby.waitingTableId = await firstOpenLobbyTableId(context, lobby);
+  }
+  const playerTables = {};
+  for (const [player, tableId] of Object.entries(lobby.playerTables || {})) {
+    const id = normalizeTableId(tableId);
+    if (!id || removed.has(id)) continue;
+    const table = await readPokerTable(context, id);
+    if (table) playerTables[player] = id;
+  }
+  lobby.playerTables = playerTables;
+  await writeLobby(context, lobby);
+}
+
+function isExpiredWaitingTable(table) {
+  normalizePokerTable(table);
+  if (table.onChain) return false;
+  if (normalizeStage(table.stage) !== "waiting") return false;
+  if (table.players.length >= 2) return false;
+  const timestamp = Date.parse(table.updatedAt || table.createdAt || "");
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp > WAITING_TABLE_TTL_MS;
 }
 
 function normalizeLobby(lobby) {

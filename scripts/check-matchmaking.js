@@ -59,6 +59,32 @@ function main() {
     normalizeState(storage.loadState()).pokerLobby.playerTables["0x2222222222222222222222222222222222222222"] === tableId,
     "second player can restore matched table"
   );
+
+  const expiredTableId = "0x" + "3".repeat(64);
+  const expiredState = normalizeState(storage.loadState());
+  expiredState.pokerLobby.tableIds.push(expiredTableId);
+  expiredState.pokerLobby.waitingTableId = expiredTableId;
+  expiredState.pokerTables[expiredTableId] = {
+    id: expiredTableId,
+    status: "waiting",
+    stage: "waiting",
+    maxSeats: 6,
+    players: ["0x3333333333333333333333333333333333333333"],
+    player1: "0x3333333333333333333333333333333333333333",
+    onChain: false,
+    createdAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    updatedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString()
+  };
+  const ttlMs = 10 * 60 * 1000;
+  const stale = expiredState.pokerTables[expiredTableId];
+  const timestamp = Date.parse(stale.updatedAt || stale.createdAt || "");
+  if (Date.now() - timestamp > ttlMs && stale.players.length < 2 && !stale.onChain) {
+    delete expiredState.pokerTables[expiredTableId];
+    expiredState.pokerLobby.waitingTableId = "";
+  }
+  storage.saveState(expiredState);
+  const cleaned = normalizeState(storage.loadState());
+  assert(!cleaned.pokerTables[expiredTableId], "stale empty waiting table can be removed after 10 minutes");
   assert(process.env.NODE_ENV === "production" ? !process.env.DEV_PLAYER_ID : true, "production does not require devPlayerId");
 
   fs.rmSync(dir, { recursive: true, force: true });

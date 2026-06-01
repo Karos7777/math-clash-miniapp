@@ -497,13 +497,21 @@ async function refreshLobbyTables() {
   try {
     const url = new URL("/api/lobby/tables", window.location.origin);
     if (state.account) url.searchParams.set("walletAddress", state.account);
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!response.ok) return;
+    url.searchParams.set("_", String(Date.now()));
+    const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Tables unavailable.");
+    }
     const data = await response.json();
     state.lobbyTables = Array.isArray(data.tables) ? data.tables : [];
     renderLobbyTables();
-  } catch {
-    elements.lobbyTables.innerHTML = '<p class="status-line">Tables unavailable.</p>';
+  } catch (error) {
+    elements.lobbyTables.innerHTML = "";
+    const failed = document.createElement("p");
+    failed.className = "status-line";
+    failed.textContent = error.message || "Tables unavailable.";
+    elements.lobbyTables.append(failed);
   }
 }
 
@@ -670,6 +678,7 @@ async function syncOffchainWithChain() {
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({
         viewer: state.account,
+        chainExists: true,
         stage: state.chainTable.stage,
         handId: state.chainTable.handId,
         handSeed: state.chainHandSeed,
