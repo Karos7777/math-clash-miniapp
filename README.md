@@ -2,6 +2,17 @@
 
 Poker Clash is a Base Sepolia testnet MVP for a six-seat poker table inside one Farcaster Mini App.
 
+## Math Clash for Android
+
+This repo also holds **Math Clash**, a standalone Android puzzle game in
+[`android/`](android/README.md): a cross-math grid where every cell answers to a
+row equation and a column equation at the same time. It shares nothing with the
+poker app — no server, no wallet, no network at all.
+
+Install the latest build straight onto a phone from
+[the preview release](../../releases/tag/android-preview), or build it with
+`cd android && ./gradlew assembleDebug`.
+
 The app has two screens:
 
 - `/` lobby: connect wallet, create a table, or choose a visible open table.

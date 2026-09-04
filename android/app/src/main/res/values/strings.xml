@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Math Clash</string>
+    <string name="app_tagline">Crossed equations. One number per cell.</string>
+
+    <!-- Home -->
+    <string name="home_focus_title">Focus index</string>
+    <string name="home_focus_caption">Your pace and accuracy over recent boards</string>
+    <string name="home_stat_solved">Solved</string>
+    <string name="home_stat_streak">Day streak</string>
+    <string name="home_stat_score">Total score</string>
+    <string name="home_mode_practice">Practice</string>
+    <string name="home_mode_practice_caption">One board after another, at the level you pick</string>
+    <string name="home_mode_focus">Focus run</string>
+    <string name="home_mode_focus_caption">Five boards, one clock, rising difficulty</string>
+    <string name="home_mode_daily">Board of the day</string>
+    <string name="home_mode_daily_caption">The same board for everyone today</string>
+    <string name="home_daily_done">Done today</string>
+    <string name="home_level">Level</string>
+    <string name="home_play">Play</string>
+    <string name="home_rules">How to play</string>
+    <string name="home_stats">Progress</string>
+    <string name="home_settings">Settings</string>
+
+    <!-- Levels -->
+    <string name="difficulty_warmup">Warm-up</string>
+    <string name="difficulty_easy">Easy</string>
+    <string name="difficulty_medium">Medium</string>
+    <string name="difficulty_hard">Hard</string>
+    <string name="difficulty_expert">Expert</string>
+    <string name="difficulty_insane">Insane</string>
+    <string name="difficulty_shape">%1$d×%1$d · %2$s</string>
+    <string name="difficulty_par">par %1$s</string>
+
+    <!-- Game -->
+    <string name="game_building">Building a board…</string>
+    <string name="game_time">Time</string>
+    <string name="game_hints">Hints</string>
+    <string name="game_slips">Slips</string>
+    <string name="game_lines">Lines</string>
+    <string name="game_board_of">Board %1$d of %2$d</string>
+    <string name="game_tray_title">Numbers left</string>
+    <string name="game_tray_empty">Every number is on the board</string>
+    <string name="game_help_pick">Tap a cell, then a number</string>
+    <string name="game_help_place">Tap a cell to drop %1$d in</string>
+    <string name="game_help_take">Tap a number on the board to take it back</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_hint">Hint</string>
+    <string name="action_restart">Restart</string>
+    <string name="hint_opened">One cell opened for you</string>
+    <string name="hint_rescued">This board could no longer be finished — %1$d move(s) taken back</string>
+    <string name="hint_none">No hints left on this board</string>
+    <string name="hint_nothing">Nothing left to open</string>
+    <string name="confirm_leave_title">Leave this board?</string>
+    <string name="confirm_leave_text">The board is not saved — you will start a new one next time.</string>
+    <string name="confirm_restart_title">Start this board again?</string>
+    <string name="confirm_restart_text">Your numbers come off the board. The clock keeps running.</string>
+    <string name="action_leave">Leave</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Yes</string>
+
+    <!-- Result -->
+    <string name="result_title">Board solved</string>
+    <string name="result_time">Time</string>
+    <string name="result_score">Score</string>
+    <string name="result_hints">Hints used</string>
+    <string name="result_slips">Wrong lines</string>
+    <string name="result_personal_best">New best time for this level</string>
+    <string name="action_next">Next board</string>
+    <string name="action_home">Home</string>
+    <string name="focus_run_title">Focus run</string>
+    <string name="focus_done_title">Run complete</string>
+    <string name="focus_total_time">Total time</string>
+    <string name="focus_total_score">Total score</string>
+    <string name="focus_index_now">Focus index now %1$d</string>
+    <string name="focus_index_up">+%1$d since you started</string>
+    <string name="focus_index_flat">Steady</string>
+
+    <!-- Rules -->
+    <string name="rules_title">How to play</string>
+    <string name="rules_goal_title">The goal</string>
+    <string name="rules_goal_body">Put every number from the tray into the grid so that all row equations and all column equations come out to the number printed at their end. Each number is used exactly once.</string>
+    <string name="rules_cross_title">Why it is hard</string>
+    <string name="rules_cross_body">Every cell answers to two equations at once — the row it sits in and the column it sits in. A number that fixes a row usually breaks a column, so you have to hold several lines in your head at the same time.</string>
+    <string name="rules_order_title">Order of operations</string>
+    <string name="rules_order_standard">× and ÷ are worked out before + and −, the usual school rule. 2 + 3 × 4 = 14.</string>
+    <string name="rules_order_ltr">Lines are read strictly left to right, and top to bottom. 2 + 3 × 4 = 20.</string>
+    <string name="rules_order_switch">You can switch this in Settings.</string>
+    <string name="rules_controls_title">Controls</string>
+    <string name="rules_controls_body">Tap an empty cell, then tap a number to drop it in. Tap a number already on the board to take it back. Amber cells are given to you and cannot be moved. A line turns green the moment it is right and red when it is finished but wrong.</string>
+    <string name="rules_train_title">What it trains</string>
+    <string name="rules_train_body">Mental arithmetic under a clock, plus holding several constraints in working memory at once. Short focused sets work better than long sessions — a five board run is enough to feel switched on.</string>
+    <string name="rules_example_title">Worked example</string>
+
+    <!-- Progress -->
+    <string name="stats_title">Progress</string>
+    <string name="stats_focus_index">Focus index</string>
+    <string name="stats_solved">Boards solved</string>
+    <string name="stats_streak">Day streak</string>
+    <string name="stats_best_streak">Best streak</string>
+    <string name="stats_time">Time on boards</string>
+    <string name="stats_score">Total score</string>
+    <string name="stats_by_level">By level</string>
+    <string name="stats_level_row">%1$d solved · best %2$s</string>
+    <string name="stats_level_empty">not played yet</string>
+    <string name="stats_empty_title">Nothing here yet</string>
+    <string name="stats_empty_body">Solve a board and your times show up here.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_order">Order of operations</string>
+    <string name="settings_order_standard">× and ÷ first</string>
+    <string name="settings_order_standard_caption">The usual school rule</string>
+    <string name="settings_order_ltr">Left to right</string>
+    <string name="settings_order_ltr_caption">Read every line as it is written</string>
+    <string name="settings_order_note">Boards are built for the rule you pick, so switching starts a fresh board.</string>
+    <string name="settings_theme">Appearance</string>
+    <string name="settings_theme_system">Follow system</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_haptics">Vibration</string>
+    <string name="settings_haptics_caption">A short buzz when a line closes</string>
+    <string name="settings_reset">Reset progress</string>
+    <string name="settings_reset_caption">Clears every stat, streak and best time</string>
+    <string name="settings_reset_confirm">Reset all progress?</string>
+    <string name="settings_reset_confirm_text">This cannot be undone.</string>
+    <string name="action_reset">Reset</string>
+    <string name="settings_about">Math Clash %1$s</string>
+
+    <!-- Shared -->
+    <string name="action_back">Back</string>
+    <string name="cd_cell">Row %1$d, column %2$d</string>
+    <string name="cd_cell_empty">empty</string>
+    <string name="cd_cell_locked">given, %1$d</string>
+    <string name="cd_row_target">Row %1$d must come to %2$d</string>
+    <string name="cd_col_target">Column %1$d must come to %2$d</string>
+</resources>

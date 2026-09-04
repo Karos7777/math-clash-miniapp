@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown for the instant before Compose paints; kept in step with the theme. -->
+    <color name="window_background">#F4F6FC</color>
+    <color name="icon_background">#151B2E</color>
+</resources>

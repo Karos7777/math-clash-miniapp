@@ -1,0 +1,96 @@
+name: Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - claude/math-clash-android-app-pq68jn
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Make the wrapper runnable
+        run: chmod +x android/gradlew
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk math-clash.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: math-clash-apk
+          path: math-clash.apk
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: android/app/build/reports/
+          if-no-files-found: ignore
+
+      # A stable download link, so the APK can be installed straight from a phone.
+      - name: Publish preview release
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-preview --yes || true
+          git push --force origin HEAD:refs/tags/android-preview
+          gh release create android-preview math-clash.apk \
+            --title "Math Clash — preview build" \
+            --notes "Debug build of the Math Clash Android app, built from \`${GITHUB_SHA:0:7}\`.
+
+          Download **math-clash.apk** below and open it on the phone. Android will ask you to allow installing from this source once.
+
+          This is an unsigned debug build meant for trying the game out, not a Play Store release." \
+            --prerelease \
+            --verify-tag
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Math Clash APK"
+            echo ""
+            echo "- Artifact: **math-clash-apk** (attached to this run)"
+            echo "- Direct install link: https://github.com/${GITHUB_REPOSITORY}/releases/tag/android-preview"
+          } >> "$GITHUB_STEP_SUMMARY"

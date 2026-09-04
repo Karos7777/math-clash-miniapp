@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_tagline">Скрещённые уравнения. По одному числу в клетке.</string>
+
+    <!-- Главная -->
+    <string name="home_focus_title">Индекс фокуса</string>
+    <string name="home_focus_caption">Ваш темп и точность на последних досках</string>
+    <string name="home_stat_solved">Решено</string>
+    <string name="home_stat_streak">Дней подряд</string>
+    <string name="home_stat_score">Очки</string>
+    <string name="home_mode_practice">Тренировка</string>
+    <string name="home_mode_practice_caption">Доска за доской на выбранном уровне</string>
+    <string name="home_mode_focus">Разгон</string>
+    <string name="home_mode_focus_caption">Пять досок, один таймер, сложность растёт</string>
+    <string name="home_mode_daily">Доска дня</string>
+    <string name="home_mode_daily_caption">Сегодня она одинаковая у всех</string>
+    <string name="home_daily_done">Сегодня пройдена</string>
+    <string name="home_level">Уровень</string>
+    <string name="home_play">Играть</string>
+    <string name="home_rules">Как играть</string>
+    <string name="home_stats">Прогресс</string>
+    <string name="home_settings">Настройки</string>
+
+    <!-- Уровни -->
+    <string name="difficulty_warmup">Разминка</string>
+    <string name="difficulty_easy">Лёгкий</string>
+    <string name="difficulty_medium">Средний</string>
+    <string name="difficulty_hard">Сложный</string>
+    <string name="difficulty_expert">Эксперт</string>
+    <string name="difficulty_insane">Безумный</string>
+    <string name="difficulty_par">норма %1$s</string>
+
+    <!-- Игра -->
+    <string name="game_building">Собираем доску…</string>
+    <string name="game_time">Время</string>
+    <string name="game_hints">Подсказки</string>
+    <string name="game_slips">Ошибки</string>
+    <string name="game_lines">Линии</string>
+    <string name="game_board_of">Доска %1$d из %2$d</string>
+    <string name="game_tray_title">Осталось чисел</string>
+    <string name="game_tray_empty">Все числа на доске</string>
+    <string name="game_help_pick">Нажмите клетку, затем число</string>
+    <string name="game_help_place">Нажмите клетку, чтобы поставить %1$d</string>
+    <string name="game_help_take">Нажмите число на доске, чтобы забрать его</string>
+    <string name="action_undo">Отменить</string>
+    <string name="action_hint">Подсказка</string>
+    <string name="action_restart">Заново</string>
+    <string name="hint_opened">Одна клетка открыта</string>
+    <string name="hint_rescued">Доску нельзя было доиграть — отменено ходов: %1$d</string>
+    <string name="hint_none">Подсказки на этой доске кончились</string>
+    <string name="hint_nothing">Открывать больше нечего</string>
+    <string name="confirm_leave_title">Выйти с доски?</string>
+    <string name="confirm_leave_text">Доска не сохраняется — в следующий раз начнётся новая.</string>
+    <string name="confirm_restart_title">Начать доску заново?</string>
+    <string name="confirm_restart_text">Ваши числа уйдут с доски. Таймер продолжит идти.</string>
+    <string name="action_leave">Выйти</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_confirm">Да</string>
+
+    <!-- Итог -->
+    <string name="result_title">Доска решена</string>
+    <string name="result_time">Время</string>
+    <string name="result_score">Очки</string>
+    <string name="result_hints">Подсказок</string>
+    <string name="result_slips">Неверных линий</string>
+    <string name="result_personal_best">Новый рекорд на этом уровне</string>
+    <string name="action_next">Следующая доска</string>
+    <string name="action_home">На главную</string>
+    <string name="focus_run_title">Разгон</string>
+    <string name="focus_done_title">Разгон пройден</string>
+    <string name="focus_total_time">Общее время</string>
+    <string name="focus_total_score">Всего очков</string>
+    <string name="focus_index_now">Индекс фокуса: %1$d</string>
+    <string name="focus_index_up">+%1$d за этот разгон</string>
+    <string name="focus_index_flat">Без изменений</string>
+
+    <!-- Правила -->
+    <string name="rules_title">Как играть</string>
+    <string name="rules_goal_title">Цель</string>
+    <string name="rules_goal_body">Расставьте все числа из лотка по клеткам так, чтобы каждое уравнение по строке и каждое уравнение по столбцу дало число, записанное в конце линии. Каждое число используется ровно один раз.</string>
+    <string name="rules_cross_title">Почему это сложно</string>
+    <string name="rules_cross_body">Каждая клетка работает сразу в двух уравнениях — в своей строке и в своём столбце. Число, которое чинит строку, обычно ломает столбец, поэтому приходится держать в голове несколько линий одновременно.</string>
+    <string name="rules_order_title">Порядок действий</string>
+    <string name="rules_order_standard">× и ÷ считаются раньше + и −, как в школе. 2 + 3 × 4 = 14.</string>
+    <string name="rules_order_ltr">Линии читаются строго слева направо и сверху вниз. 2 + 3 × 4 = 20.</string>
+    <string name="rules_order_switch">Правило переключается в настройках.</string>
+    <string name="rules_controls_title">Управление</string>
+    <string name="rules_controls_body">Нажмите пустую клетку, затем число — оно встанет в клетку. Нажмите число, уже стоящее на доске, чтобы забрать его обратно. Янтарные клетки даны заранее и не двигаются. Линия становится зелёной, как только сходится, и красной, если заполнена неверно.</string>
+    <string name="rules_train_title">Что это тренирует</string>
+    <string name="rules_train_body">Устный счёт под таймер и удержание нескольких условий в рабочей памяти сразу. Короткие подходы работают лучше долгих: разгона из пяти досок хватает, чтобы почувствовать себя собранным.</string>
+    <string name="rules_example_title">Разбор примера</string>
+
+    <!-- Прогресс -->
+    <string name="stats_title">Прогресс</string>
+    <string name="stats_focus_index">Индекс фокуса</string>
+    <string name="stats_solved">Решено досок</string>
+    <string name="stats_streak">Дней подряд</string>
+    <string name="stats_best_streak">Лучшая серия</string>
+    <string name="stats_time">Время за доской</string>
+    <string name="stats_score">Всего очков</string>
+    <string name="stats_by_level">По уровням</string>
+    <string name="stats_level_row">решено %1$d · лучшее %2$s</string>
+    <string name="stats_level_empty">ещё не играли</string>
+    <string name="stats_empty_title">Пока пусто</string>
+    <string name="stats_empty_body">Решите доску — и здесь появится ваше время.</string>
+
+    <!-- Настройки -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_order">Порядок действий</string>
+    <string name="settings_order_standard">Сначала × и ÷</string>
+    <string name="settings_order_standard_caption">Обычное школьное правило</string>
+    <string name="settings_order_ltr">Слева направо</string>
+    <string name="settings_order_ltr_caption">Линия читается как записана</string>
+    <string name="settings_order_note">Доски собираются под выбранное правило, поэтому переключение начнёт новую доску.</string>
+    <string name="settings_theme">Оформление</string>
+    <string name="settings_theme_system">Как в системе</string>
+    <string name="settings_theme_dark">Тёмное</string>
+    <string name="settings_theme_light">Светлое</string>
+    <string name="settings_haptics">Вибрация</string>
+    <string name="settings_haptics_caption">Короткий отклик, когда линия сходится</string>
+    <string name="settings_reset">Сбросить прогресс</string>
+    <string name="settings_reset_caption">Очистит статистику, серии и рекорды</string>
+    <string name="settings_reset_confirm">Сбросить весь прогресс?</string>
+    <string name="settings_reset_confirm_text">Это нельзя отменить.</string>
+    <string name="action_reset">Сбросить</string>
+    <string name="settings_about">Math Clash %1$s</string>
+
+    <!-- Общее -->
+    <string name="action_back">Назад</string>
+    <string name="cd_cell">Строка %1$d, столбец %2$d</string>
+    <string name="cd_cell_empty">пусто</string>
+    <string name="cd_cell_locked">дано, %1$d</string>
+    <string name="cd_row_target">Строка %1$d должна дать %2$d</string>
+    <string name="cd_col_target">Столбец %1$d должен дать %2$d</string>
+</resources>
