@@ -2,6 +2,7 @@ package com.karos.mathclash
 
 import com.karos.mathclash.engine.BoardSpec
 import com.karos.mathclash.game.BoardPlay
+import com.karos.mathclash.game.CalendarDay
 import com.karos.mathclash.game.HintResult
 import com.karos.mathclash.engine.DailyChallenge
 import com.karos.mathclash.engine.Difficulty
@@ -282,5 +283,59 @@ class ScoringTest {
         val insane = Scoring.reward(Difficulty.INSANE, 120, 0, 0)
         assertTrue(insane.score > easy.score)
         assertNotNull(easy)
+    }
+}
+
+class CalendarDayTest {
+
+    @Test
+    fun `epoch day matches the civil calendar`() {
+        assertEquals(0L, CalendarDay.epochDayOf(1970, 1, 1))
+        assertEquals(-1L, CalendarDay.epochDayOf(1969, 12, 31))
+        assertEquals(1L, CalendarDay.epochDayOf(1970, 1, 2))
+        assertEquals(19_000L, CalendarDay.epochDayOf(2022, 1, 8))
+        assertEquals(20_700L, CalendarDay.epochDayOf(2026, 9, 4))
+        // a leap day and the day after it
+        assertEquals(CalendarDay.epochDayOf(2024, 2, 29) + 1, CalendarDay.epochDayOf(2024, 3, 1))
+        // century rules: 1900 was not a leap year, 2000 was
+        assertEquals(CalendarDay.epochDayOf(1900, 2, 28) + 1, CalendarDay.epochDayOf(1900, 3, 1))
+        assertEquals(CalendarDay.epochDayOf(2000, 2, 28) + 2, CalendarDay.epochDayOf(2000, 3, 1))
+    }
+
+    @Test
+    fun `consecutive days are consecutive numbers across a year boundary`() {
+        var previous = CalendarDay.epochDayOf(2025, 12, 30)
+        for ((y, m, d) in listOf(Triple(2025, 12, 31), Triple(2026, 1, 1), Triple(2026, 1, 2))) {
+            val current = CalendarDay.epochDayOf(y, m, d)
+            assertEquals("$y-$m-$d", previous + 1, current)
+            previous = current
+        }
+    }
+
+    @Test
+    fun `weekdays are numbered from monday`() {
+        val zone = java.util.TimeZone.getTimeZone("UTC")
+        // 2026-08-31 is a Monday, so the week runs through to Sunday 2026-09-06.
+        val monday = CalendarDay.epochDayOf(2026, 8, 31)
+        val week = (0..6).map { offset ->
+            val midday = (monday + offset) * 86_400_000L + 12 * 3_600_000L
+            CalendarDay.today(midday, zone).isoDayOfWeek
+        }
+        assertEquals(listOf(1, 2, 3, 4, 5, 6, 7), week)
+
+        val friday = CalendarDay.today((monday + 4) * 86_400_000L + 12 * 3_600_000L, zone)
+        assertEquals(2026, friday.year)
+        assertEquals(9, friday.month)
+        assertEquals(4, friday.dayOfMonth)
+        assertEquals(monday + 4, friday.epochDay)
+    }
+
+    @Test
+    fun `today agrees with itself`() {
+        val day = CalendarDay.today()
+        assertEquals(day.epochDay, CalendarDay.epochDayOf(day.year, day.month, day.dayOfMonth))
+        assertTrue(day.isoDayOfWeek in 1..7)
+        assertTrue(day.month in 1..12)
+        assertTrue(day.dayOfMonth in 1..31)
     }
 }

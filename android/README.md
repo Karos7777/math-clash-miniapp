@@ -29,8 +29,22 @@ Every push to this branch builds an APK. Two ways to get it:
 - **From the Actions tab** — open the latest *Android APK* run and download the
   `math-clash-apk` artifact.
 
-It is a debug build, so it installs alongside anything else and needs no Play
-Store account. Requires Android 8.0 (API 26) or newer.
+Requires **Android 7.0 (API 24) or newer**. No Play Store account, no accounts
+of any kind.
+
+The APK is signed with `app/preview.keystore`, a fixed key committed alongside
+the code. That is deliberate and it is not a secret: it exists so every preview
+build carries the same signature and a newer one installs straight over an older
+one, the same reason Android ships a well-known debug key. A Play Store release
+would need its own, private key.
+
+If Android still says the app was not installed:
+
+- check the Android version — 7.0 is the floor;
+- if an older build is on the phone from before the fixed key existed, uninstall
+  it first, then install again;
+- make sure the browser is allowed to install apps (Settings → Apps → your
+  browser → Install unknown apps).
 
 ## Modes
 

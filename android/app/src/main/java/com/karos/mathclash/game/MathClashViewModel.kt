@@ -24,7 +24,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -82,11 +81,11 @@ class MathClashViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun refreshToday() {
-        val today = LocalDate.now()
+        val today = CalendarDay.today()
         _state.update {
             it.copy(
-                todayEpochDay = today.toEpochDay(),
-                dailyDifficulty = DailyChallenge.difficultyFor(today.dayOfWeek.value),
+                todayEpochDay = today.epochDay,
+                dailyDifficulty = DailyChallenge.difficultyFor(today.isoDayOfWeek),
             )
         }
     }
@@ -104,11 +103,11 @@ class MathClashViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startDaily() {
         refreshToday()
-        val today = LocalDate.now()
-        val difficulty = DailyChallenge.difficultyFor(today.dayOfWeek.value)
-        val seed = DailyChallenge.seedFor(today.year, today.monthValue, today.dayOfMonth)
+        val today = CalendarDay.today()
+        val difficulty = DailyChallenge.difficultyFor(today.isoDayOfWeek)
+        val seed = DailyChallenge.seedFor(today.year, today.month, today.dayOfMonth)
         beginSession(
-            GameMode.Daily(today.toEpochDay(), difficulty),
+            GameMode.Daily(today.epochDay, difficulty),
             difficulty,
             index = 0,
             count = 1,

@@ -10,16 +10,34 @@ android {
 
     defaultConfig {
         applicationId = "com.karos.mathclash"
-        minSdk = 26
+        minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
         resourceConfigurations += listOf("en", "ru")
+    }
+
+    signingConfigs {
+        // A fixed key, so every preview build carries the same signature and can
+        // be installed over the previous one. It is deliberately not a secret --
+        // it exists so sideloaded builds keep working, not to prove authorship.
+        // A Play Store release would need its own, private key.
+        getByName("debug") {
+            storeFile = file("preview.keystore")
+            storePassword = "mathclash"
+            keyAlias = "mathclash"
+            keyPassword = "mathclash"
+            // v1 as well as v2/v3: some vendor installers still look for it.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = true

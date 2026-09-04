@@ -48,7 +48,7 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --console=plain compileDebugKotlin 2>&1 | tee build.log || {
             echo "::group::Kotlin compiler errors"
-            grep -E "^e: |^w: .*\\.kt" build.log | head -80 || true
+            grep -E "^e: " build.log | head -80 || true
             echo "::endgroup::"
             echo "::error::Kotlin compilation failed"
             grep -E "^e: " build.log | head -40 || true
@@ -65,6 +65,20 @@ jobs:
 
       - name: Name the APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk math-clash.apk
+
+      # Proves the file a phone is about to download will actually install:
+      # apksigner exits non-zero when the signature does not verify.
+      - name: Inspect the APK
+        run: |
+          set -o pipefail
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          TOOLS=$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)
+          echo "using $TOOLS"
+          "$TOOLS/aapt2" dump badging math-clash.apk \
+            | grep -E "^package:|^sdkVersion:|^targetSdkVersion:|^native-code:" > apk-info.txt
+          "$TOOLS/apksigner" verify --verbose math-clash.apk \
+            | grep -E "^Verified|^Number" >> apk-info.txt
+          cat apk-info.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -88,15 +102,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          {
+            echo "Math Clash for Android, built from \`${GITHUB_SHA:0:7}\`."
+            echo
+            echo "Download **math-clash.apk** below and open it on the phone. Android asks once"
+            echo "for permission to install from your browser; allow it and the game installs."
+            echo
+            echo "Needs Android 7.0 or newer. Signed with the repository's preview key, so a"
+            echo "newer build installs straight over an older one."
+            echo
+            echo '```'
+            cat apk-info.txt
+            echo '```'
+          } > release-notes.md
           gh release delete android-preview --yes || true
           git push --force origin HEAD:refs/tags/android-preview
           gh release create android-preview math-clash.apk \
             --title "Math Clash — preview build" \
-            --notes "Debug build of the Math Clash Android app, built from \`${GITHUB_SHA:0:7}\`.
-
-          Download **math-clash.apk** below and open it on the phone. Android will ask you to allow installing from this source once.
-
-          This is an unsigned debug build meant for trying the game out, not a Play Store release." \
+            --notes-file release-notes.md \
             --prerelease \
             --verify-tag
 
@@ -108,4 +131,10 @@ jobs:
             echo ""
             echo "- Artifact: **math-clash-apk** (attached to this run)"
             echo "- Direct install link: https://github.com/${GITHUB_REPOSITORY}/releases/tag/android-preview"
+            if [ -f apk-info.txt ]; then
+              echo ""
+              echo '```'
+              cat apk-info.txt
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
