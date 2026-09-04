@@ -66,6 +66,13 @@ android {
     }
 
     packaging {
+        jniLibs {
+            // Store native libraries the old way, extracted at install time.
+            // Installers on Android 9 and older sometimes refuse an APK whose
+            // libraries are packed uncompressed for direct loading, and this
+            // app has one small transitive .so it gains nothing from.
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
