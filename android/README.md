@@ -29,7 +29,8 @@ Every push to this branch builds an APK. Two ways to get it:
 - **From the Actions tab** — open the latest *Android APK* run and download the
   `math-clash-apk` artifact.
 
-Requires **Android 7.0 (API 24) or newer**. No Play Store account, no accounts
+The published APK is a release build — not debuggable, no tooling libraries —
+signed so it installs by sideloading. Requires **Android 7.0 (API 24) or newer**. No Play Store account, no accounts
 of any kind.
 
 The APK is signed with `app/preview.keystore`, a fixed key committed alongside

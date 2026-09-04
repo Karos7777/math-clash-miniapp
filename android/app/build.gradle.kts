@@ -40,9 +40,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Preview builds ship unminified on purpose: R8 has not been smoke
+            // tested on a device yet, and a broken shrink is worse than a file
+            // a couple of megabytes larger. Turn it on once someone can check
+            // the result on real hardware.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
