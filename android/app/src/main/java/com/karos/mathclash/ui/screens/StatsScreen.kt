@@ -69,43 +69,56 @@ fun StatsScreen(state: AppState, viewModel: MathClashViewModel) {
             }
 
             ClashCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     FocusDial(
                         value = profile.focusIndex.roundToInt(),
                         caption = stringResource(R.string.stats_focus_index),
                     )
                     Spacer(Modifier.width(16.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            StatTile(
-                                value = profile.solved.toString(),
-                                label = stringResource(R.string.stats_solved),
-                                accent = colors.accent,
-                            )
-                            StatTile(
-                                value = profile.streak.toString(),
-                                label = stringResource(R.string.stats_streak),
-                                accent = colors.violet,
-                            )
-                            StatTile(
-                                value = profile.bestStreak.toString(),
-                                label = stringResource(R.string.stats_best_streak),
-                                accent = colors.success,
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            StatTile(
-                                value = formatLongDuration(profile.totalSeconds),
-                                label = stringResource(R.string.stats_time),
-                                accent = colors.text,
-                            )
-                            StatTile(
-                                value = profile.totalScore.toString(),
-                                label = stringResource(R.string.stats_score),
-                                accent = colors.text,
-                            )
-                        }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        StatTile(
+                            value = formatLongDuration(profile.totalSeconds),
+                            label = stringResource(R.string.stats_time),
+                            accent = colors.text,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        StatTile(
+                            value = profile.totalScore.toString(),
+                            label = stringResource(R.string.stats_score),
+                            accent = colors.text,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    StatTile(
+                        value = profile.solved.toString(),
+                        label = stringResource(R.string.stats_solved),
+                        accent = colors.accent,
+                        modifier = Modifier.weight(1f),
+                    )
+                    StatTile(
+                        value = profile.streak.toString(),
+                        label = stringResource(R.string.stats_streak),
+                        accent = colors.violet,
+                        modifier = Modifier.weight(1f),
+                    )
+                    StatTile(
+                        value = profile.bestStreak.toString(),
+                        label = stringResource(R.string.stats_best_streak),
+                        accent = colors.success,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
                 if (profile.recentRatings.size >= 3) {
                     Spacer(Modifier.height(16.dp))

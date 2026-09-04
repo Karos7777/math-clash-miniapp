@@ -29,3 +29,4 @@ android/app/build/
 android/local.properties
 android/.idea/
 *.apk
+android/build.log

@@ -80,41 +80,47 @@ fun HomeScreen(state: AppState, viewModel: MathClashViewModel) {
                 FocusDial(
                     value = state.profile.focusIndex.roundToInt(),
                     caption = stringResource(R.string.home_focus_title),
+                    diameter = 108.dp,
                 )
                 Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.home_focus_caption),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.textMuted,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        StatTile(
-                            value = state.profile.solved.toString(),
-                            label = stringResource(R.string.home_stat_solved),
-                            accent = colors.accent,
-                        )
-                        StatTile(
-                            value = state.profile.streak.toString(),
-                            label = stringResource(R.string.home_stat_streak),
-                            accent = colors.violet,
-                        )
-                        StatTile(
-                            value = compactScore(state.profile.totalScore),
-                            label = stringResource(R.string.home_stat_score),
-                            accent = colors.success,
-                        )
-                    }
-                }
+                Text(
+                    text = stringResource(R.string.home_focus_caption),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textMuted,
+                    modifier = Modifier.weight(1f),
+                )
             }
             if (state.profile.recentRatings.size >= 3) {
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
                 Sparkline(
                     values = state.profile.recentRatings,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(34.dp),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                StatTile(
+                    value = state.profile.solved.toString(),
+                    label = stringResource(R.string.home_stat_solved),
+                    accent = colors.accent,
+                    modifier = Modifier.weight(1f),
+                )
+                StatTile(
+                    value = state.profile.streak.toString(),
+                    label = stringResource(R.string.home_stat_streak),
+                    accent = colors.violet,
+                    modifier = Modifier.weight(1f),
+                )
+                StatTile(
+                    value = compactScore(state.profile.totalScore),
+                    label = stringResource(R.string.home_stat_score),
+                    accent = colors.success,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }

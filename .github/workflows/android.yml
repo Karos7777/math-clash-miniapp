@@ -40,13 +40,28 @@ jobs:
       - name: Make the wrapper runnable
         run: chmod +x android/gradlew
 
+      # Compile first and re-print just the compiler errors: a Gradle stack trace
+      # buries them hundreds of lines deep otherwise.
+      - name: Compile
+        working-directory: android
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --console=plain compileDebugKotlin 2>&1 | tee build.log || {
+            echo "::group::Kotlin compiler errors"
+            grep -E "^e: |^w: .*\\.kt" build.log | head -80 || true
+            echo "::endgroup::"
+            echo "::error::Kotlin compilation failed"
+            grep -E "^e: " build.log | head -40 || true
+            exit 1
+          }
+
       - name: Unit tests
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+        run: ./gradlew --no-daemon --console=plain testDebugUnitTest
 
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: ./gradlew --no-daemon --console=plain assembleDebug
 
       - name: Name the APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk math-clash.apk
